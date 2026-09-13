@@ -92,35 +92,47 @@ Lengths are searched in increasing order and a length is exhausted before the ne
 
 ## Benchmark
 
-The 25 programs from *Synthesis of Loop-Free Programs* (Gulwani, Jha, Tiwari, Venkatesan, PLDI 2011), written as specifications, plus ten classics. Numbers below are one run on an Intel Iris Xe (13th-gen i7 laptop, Chrome 140, Windows 11); "search" excludes the ~2 s one-time shader compile per ISA. Run **Run all (benchmark)** in the gallery for your own GPU and copy the table.
+The 25 programs from *Synthesis of Loop-Free Programs* (Gulwani, Jha, Tiwari, Venkatesan, PLDI 2011), written as specifications, plus ten classics. Numbers below are one run of **Run all (benchmark)** on an Intel Iris Xe (13th-gen i7 laptop, Chrome, Windows 11), with the benchmark's length cap of 4 for the presets marked hard; the P19 row is a separate run at length 6 through the CLI. Run the benchmark in the gallery for your own GPU and copy the table.
 
-| preset | textbook | found | search | verified |
-|---|---:|---:|---:|---|
-| P1 turn off rightmost 1 | 2 | 2 | 13 ms | 2^32 |
-| P2 test for 2^n − 1 form | 2 | 2 | 11 ms | 2^32 |
-| P3 isolate rightmost 1 | 2 | 2 | 9 ms | 2^32 |
-| P4 mask from rightmost 1 down | 2 | 2 | 7 ms | 2^32 |
-| P5 right-propagate rightmost 1 | 2 | 2 | 11 ms | 2^32 |
-| P6 turn on rightmost 0 | 2 | 2 | 10 ms | 2^32 |
-| P7 isolate rightmost 0 | 3 | 3 | 74 ms | 2^32 |
-| P8 mask of trailing 0s | 3 | 3 | 73 ms | 2^32 |
-| P9 abs | 3 | 3 | 20 ms | 2^32 |
-| P10 nlz(x) == nlz(y) | 3 | 3 | 2.3 s | 22.5 B pairs |
-| P11 nlz(x) < nlz(y) | 3 | 3 | 87 ms | 22.5 B pairs |
-| P12 nlz(x) ≤ nlz(y) | 3 | 3 | 510 ms | 22.5 B pairs |
-| P13 sign | 4 | 4 | 109 ms | 2^32 |
-| P14 floor average | 4 | 4 | 88 ms | 22.5 B pairs |
-| P15 ceiling average | 4 | 4 | 90 ms | 22.5 B pairs |
-| P16 signed max | 5 | 5 | 9.4 s (15.5 B programs) | 22.5 B pairs |
-| P17 turn off rightmost run of 1s | 4 | 4 | 94 ms | 2^32 |
-| P18 is power of two | 4 | **3** | 42 ms | 2^32 |
-| P19 exchange bit fields (3 inputs) | 6 | none ≤ 4 | 650 ms | — |
-| P20 next with same popcount | 9 | none ≤ 4 | 2.0 s | — |
-| P21 cycle three values (3 inputs) | 8 | none ≤ 4 | 223 ms | — |
-| P22 parity (with popcnt) | 2 | 2 | 6 ms | 2^32 |
-| P23 popcount (base ISA) | 12 | none ≤ 4 | 603 ms | — |
-| P24 round up to power of two | 12 | none ≤ 4 | 61 ms | — |
-| P25 mulhi (with mulhi) | 1 | 1 | 6 ms | 22.5 B pairs |
+| preset | textbook | found | program | search | verified |
+|---|---:|---:|---|---:|---|
+| P1 turn off rightmost 1 | 2 | 2 | `x & (x - 1)` | 41 ms | 2^32 |
+| P2 test for 2^n − 1 form | 2 | 2 | `x & (x + 1)` | 25 ms | 2^32 |
+| P3 isolate rightmost 1 | 2 | 2 | `x & -x` | 23 ms | 2^32 |
+| P4 mask from rightmost 1 down | 2 | 2 | `x ^ (x - 1)` | 28 ms | 2^32 |
+| P5 right-propagate rightmost 1 | 2 | 2 | `x \| (x - 1)` | 25 ms | 2^32 |
+| P6 turn on rightmost 0 | 2 | 2 | `x \| (x + 1)` | 23 ms | 2^32 |
+| P7 isolate rightmost 0 | 3 | 3 | `~x & (x + 1)` | 211 ms | 2^32 |
+| P8 mask of trailing 0s | 3 | 3 | `~(x \| -x)` | 183 ms | 2^32 |
+| P9 abs | 3 | 3 | `t = (int)x >> 31; (x ^ t) - t` | 59 ms | 2^32 |
+| P10 nlz(x) == nlz(y) | 3 | 3 | `(x ^ y) <= (x & y)` | 4.5 s † | 22.5 B pairs |
+| P11 nlz(x) < nlz(y) | 3 | 3 | `y < (x & ~y)` | 260 ms | 22.5 B pairs |
+| P12 nlz(x) ≤ nlz(y) | 3 | 3 | `(y & ~x) <= x` | 227 ms | 22.5 B pairs |
+| P13 sign | 4 | 4 | `(-x >> 31) \| ((int)x >> 31)` | 263 ms | 2^32 |
+| P14 floor average | 4 | 4 | `((x ^ y) >> 1) + (x & y)` | 112 ms | 22.5 B pairs |
+| P15 ceiling average | 4 | 4 | `(x \| y) - ((x ^ y) >> 1)` | 123 ms | 22.5 B pairs |
+| P16 signed max | 5 | 5 | `x - (-((int)x < (int)y) & (x - y))` | 9.7 s (11.0 B programs) | 22.5 B pairs |
+| P17 turn off rightmost run of 1s | 4 | 4 | `x & (x + (x & -x))` | 259 ms | 2^32 |
+| P18 is power of two | 4 | **3** | `t = -x; (x ^ t) < t` | 52 ms | 2^32 |
+| P19 exchange bit fields (3 inputs) | 6 | 6 (at max length 6) | `t = y & (x ^ (x >> z)); (t << z) ^ x ^ t` | 8.6 min (101.8 B programs) | 1.07 B triples |
+| P20 next with same popcount | 9 | none ≤ 4 | | 3.6 s † | — |
+| P21 cycle three values (3 inputs) | 8 | none ≤ 4 | | 163 ms | — |
+| P22 parity (with popcnt) | 2 | 2 | `popcnt(x) & 1` | 24 ms | 2^32 |
+| P23 popcount (base ISA) | 12 | none ≤ 4 | | 107 ms | — |
+| P24 round up to power of two | 12 | none ≤ 4 | | 77 ms | — |
+| P25 mulhi (with mulhi) | 1 | 1 | `mulhi(x, y)` | 21 ms | 22.5 B pairs |
+| sign-extend a byte | 2 | 2 | `(int)(x << 24) >> 24` | 20 ms | 2^32 |
+| signed halve toward zero | 3 | 3 | `(int)(x + (x >> 31)) >> 1` | 64 ms | 2^32 |
+| trailing zeros without ctz | 4 | 4 | `popcnt(~(x \| -x))` | 3.5 s † | 2^32 |
+| isolate the highest 1-bit (with clz) | 3 | 3 | `x & (0x80000000 >> clz(x))` | 3.9 s † | 2^32 |
+| unsigned min | 5 | 5 | `y + (-(x < y) & (x - y))` | 4.5 s (11.8 B programs) | 22.5 B pairs |
+| zero byte in word? (0/1) | 5 | **4** | `x < (x \| ((x - 0x01010101) & 0x80808080))` | 102 ms | 2^32 |
+| absolute difference (signed) | 4 (wrong) | none ≤ 5 | | 10 s (30.7 B programs) | — |
+| round up to a multiple of 8 | 2 | 2 | `(x + 7) & -8` | 27 ms | 2^32 |
+| swap adjacent bit pairs | 5 | 5 | `t = x & 0x33333333; ((x - t) >> 2) + (t << 2)` | 1.1 s | 2^32 |
+| multiple of 3? (no division) | 2 | 2 | `(x * 0xaaaaaaab) <= 0x55555555` | 35 ms | 2^32 |
+
+† includes a ~2–3 s one-time shader compile for an ISA that had not been used yet in that session.
 
 P19–P21 and P23–P24 have textbook solutions of 6–12 instructions; brute force at length 6 is ~10^12 programs (minutes on this GPU, well under a minute on a large discrete one), and length 7+ is out of reach. That is the honest horizon of exhaustive search; the point of the tool is what happens below it.
 
