@@ -119,7 +119,7 @@ export async function searchSelfTest(gpu: Gpu): Promise<NonNullable<SelfTestRepo
   const gpuSet = new Set<string>();
   let gpuEvaluated = 0n;
   const session = new SearchSession();
-  for await (const ev of runSearch({ cfg, samples, targets, minLen: 3, maxLen: 3, gpu, stopAtFirstLength: false }, session)) {
+  for await (const ev of runSearch({ cfg, samples, targets, minLen: 3, maxLen: 3, gpu, stopAtFirstLength: false, freeConst: false }, session)) {
     if (ev.type === 'candidate') gpuSet.add(programToString(cfg, ev.program));
     if (ev.type === 'length-done') gpuEvaluated = ev.evaluated;
     if (ev.type === 'error') return { ok: false, gpuCount: gpuSet.size, cpuCount: cpuSet.size, detail: ev.message };

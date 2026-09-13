@@ -32,6 +32,10 @@ export interface Solution {
   program: Program;
   L: number;
   expr: string;
+  /** the config the program's operand indices refer to (the search config, or it plus one synthesized constant) */
+  cfg: SpaceConfig;
+  /** true when the last instruction uses a constant that was solved for, not enumerated */
+  synthesized: boolean;
   verify?: VerifyReport;
   /** counterexample from the CPU screen or GPU verification, if any */
   rejected?: number[];
@@ -147,12 +151,13 @@ export async function runEngine(config: EngineConfig, gpu: Gpu | null, events: E
           if (!ev.message.startsWith('GPU/CPU')) { result.error = ev.message; session.stop = true; }
           break;
         case 'candidate': {
-          const key = JSON.stringify(ev.program);
+          const pcfg = ev.cfg; // may carry a synthesized constant appended to the pool
+          const key = JSON.stringify(ev.program) + '|' + pcfg.consts.join(',');
           if (seen.has(key)) break;
           seen.add(key);
-          if (!isDeadCodeFree(cfg, ev.program)) break;
-          const evalProg = (inputs: number[]) => evalProgram(cfg, ev.program, inputs);
-          const ce = quickCheck(cfg, ev.program, spec, evalProg);
+          if (!isDeadCodeFree(pcfg, ev.program)) break;
+          const evalProg = (inputs: number[]) => evalProgram(pcfg, ev.program, inputs);
+          const ce = quickCheck(pcfg, ev.program, spec, evalProg);
           if (ce) {
             result.screenedOut++;
             const next = withCounterexample(samples, spec, ce, ceCount++);
@@ -161,17 +166,17 @@ export async function runEngine(config: EngineConfig, gpu: Gpu | null, events: E
             break;
           }
           // the printed code must mean the same thing as the interpreter
-          const js = compileToJs(cfg, ev.program);
+          const js = compileToJs(pcfg, ev.program);
           let printerOk = true;
           for (let s = 0; s < NS; s++) {
             const t = samples.inputs.map((a) => a[s]);
             if (js(...t) !== evalProg(t)) { printerOk = false; break; }
           }
           if (!printerOk) { events.onError?.('printer/interpreter disagreement on ' + key); break; }
-          const expr = exprString(cfg, ev.program);
+          const expr = exprString(pcfg, ev.program);
           if (seenExpr.has(expr)) break; // same DAG, different instruction order
           seenExpr.add(expr);
-          const sol: Solution = { program: ev.program, L: ev.L, expr };
+          const sol: Solution = { program: ev.program, L: ev.L, expr, cfg: pcfg, synthesized: pcfg !== cfg };
           accepted.push(sol);
           session.accepted++;
           if (!foundL) { foundL = ev.L; firstHitAt = performance.now(); }
@@ -199,7 +204,7 @@ export async function runEngine(config: EngineConfig, gpu: Gpu | null, events: E
         if (gpu) {
           // the first program that passes gets the full treatment; alternatives get the light pass
           rep = await verifyProgram({
-            gpu, cfg, program: sol.program, spec, signal,
+            gpu, cfg: sol.cfg, program: sol.program, spec, signal,
             randomLog2: config.verifyRandomLog2,
             level: anyGood ? 'light' : 'full',
             onProgress: (d, t, p) => events.onVerifyProgress?.(sol, d, t, p),
@@ -212,7 +217,7 @@ export async function runEngine(config: EngineConfig, gpu: Gpu | null, events: E
         }
         if (!rep) {
           if (!anyGood || !gpu) {
-            rep = await verifyOnCpu({ cfg, program: sol.program, spec, signal, onProgress: (d, t, p) => events.onVerifyProgress?.(sol, d, t, p) });
+            rep = await verifyOnCpu({ cfg: sol.cfg, program: sol.program, spec, signal, onProgress: (d, t, p) => events.onVerifyProgress?.(sol, d, t, p) });
           } else {
             // an alternative on a broken GPU: not worth 30 s of CPU time
             continue;

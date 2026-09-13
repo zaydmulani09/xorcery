@@ -20,7 +20,12 @@
  * independent instructions. Together these rules make the kernel evaluate
  * exactly the canonical dead-code-free programs of length L — the CPU
  * enumerator in `core/space.ts` is the reference for that claim and the
- * browser self-test compares the two.
+ * self-test compares the two.
+ *
+ * On top of the enumerated programs, the last instruction may use a
+ * *synthesized* constant (any 32-bit value, not just the pool): for
+ * `r = v op c` the samples determine c, so it costs one check instead of a
+ * 2^32-way enumeration (see core/freeconst.ts).
  *
  * The kernel depends only on the list of enabled ops. Program length, input
  * count, constants and the per-slot digit layout all arrive through buffers,
@@ -29,11 +34,13 @@
  */
 import { HELPERS, HELPER_DEPS, Op } from '../core/isa';
 import { PAIR_KINDS, PairKind, Space, pairKind } from '../core/space';
+import { freeKind } from '../core/freeconst';
 
 export const NS = 32; // samples per search
 export const WG = 256; // workgroup size
 export const MAX_RESULTS = 64; // result entries
-export const ENTRY_WORDS = 8; // u32 per result entry (one packed instruction per slot, L <= 8)
+export const ENTRY_WORDS = 12; // u32 per result entry: 8 packed instructions (L <= 8), synthesized constant, flags, pad, pad
+export const FREE = 255; // operand index meaning "the synthesized constant" in a result entry
 export const MAX_LEN = 8;
 export const MAX_VALUES = 3 + 12 + (MAX_LEN - 2); // inputs + consts + prefix results held in workgroup memory
 export const LAYOUT_STRIDE = 4; // u32 per (slot, op) layout entry: base, count, pairOffset, pad
@@ -49,7 +56,8 @@ export const P_NINPUTS = 20;
 export const P_NCONSTS = 21;
 export const P_MIDCOUNT = 22;
 export const P_NOPS = 23;
-export const PARAMS_WORDS = 24;
+export const P_FREECONST = 24; // 1 = synthesize constants in the last slot
+export const PARAMS_WORDS = 28;
 
 export interface SearchLayout {
   /** flat pair tables */
@@ -161,6 +169,50 @@ export function generateKernel(ops: Op[]): string {
     inner.push(block.join('\n'));
   });
 
+  // ---- synthesized constants in the last slot ---------------------------
+  // (mirrors core/freeconst.ts; only when no unread prefix result remains)
+  const freeCheck = (expr: string, from = 1): string => `
+          var ok = true;
+          for (var s = ${from}u; s < ${NS}u; s++) {
+            if ((${expr}) != tg[s]) { ok = false; break; }
+          }
+          evaluated += 1u;`;
+  const free: string[] = [];
+  ops.forEach((op, oi) => {
+    const kind = freeKind(op);
+    if (!kind) return;
+    const V = 'mv[s]';
+    const lines: string[] = [`      // ---- ${op.id} with a synthesized constant ----`];
+    if (kind === 'shift') {
+      lines.push(`      for (var c = 0u; c < 32u; c++) {`);
+      lines.push(freeCheck(wgslExpr(op, V, 'c'), 0));
+      lines.push(`        if (ok) { claimFree(&pp, S, mop, ma, mb, ${oi}u, 1u, c); }`);
+      lines.push(`      }`);
+    } else if (op.id === 'add') {
+      lines.push(`      { let c = tg[0] - mv[0];`, freeCheck(wgslExpr(op, V, 'c')), `        if (ok) { claimFree(&pp, S, mop, ma, mb, ${oi}u, 1u, c); } }`);
+    } else if (op.id === 'xor') {
+      lines.push(`      { let c = tg[0] ^ mv[0];`, freeCheck(wgslExpr(op, V, 'c')), `        if (ok) { claimFree(&pp, S, mop, ma, mb, ${oi}u, 1u, c); } }`);
+    } else if (op.id === 'sub') {
+      lines.push(`      { let c = mv[0] - tg[0];`, freeCheck(wgslExpr(op, V, 'c')), `        if (ok) { claimFree(&pp, S, mop, ma, mb, ${oi}u, 1u, c); } }`);
+      lines.push(`      { let c = tg[0] + mv[0];`, freeCheck(wgslExpr(op, 'c', V)), `        if (ok) { claimFree(&pp, S, mop, ma, mb, ${oi}u, 2u, c); } }`);
+    } else if (op.id === 'mul') {
+      lines.push(`      { var s0 = NONE; for (var s = 0u; s < ${NS}u; s++) { if ((mv[s] & 1u) != 0u) { s0 = s; break; } }`);
+      lines.push(`        if (s0 != NONE) { let c = tg[s0] * inv32(mv[s0]);`, freeCheck(wgslExpr(op, V, 'c'), 0), `          if (ok) { claimFree(&pp, S, mop, ma, mb, ${oi}u, 1u, c); } } }`);
+    } else if (op.id === 'and') {
+      lines.push(`      { var must1 = 0u; var must0 = 0u; var bad = false;`);
+      lines.push(`        for (var s = 0u; s < ${NS}u; s++) { if ((tg[s] & ~mv[s]) != 0u) { bad = true; break; } must1 |= mv[s] & tg[s]; must0 |= mv[s] & ~tg[s]; }`);
+      lines.push(`        evaluated += 1u;`);
+      lines.push(`        if (!bad && (must1 & must0) == 0u) { claimFree(&pp, S, mop, ma, mb, ${oi}u, 1u, must1); } }`);
+    } else if (op.id === 'or') {
+      lines.push(`      { var must1 = 0u; var must0 = 0u; var bad = false;`);
+      lines.push(`        for (var s = 0u; s < ${NS}u; s++) { if ((mv[s] & ~tg[s]) != 0u) { bad = true; break; } must1 |= tg[s] & ~mv[s]; must0 |= ~tg[s]; }`);
+      lines.push(`        evaluated += 1u;`);
+      lines.push(`        if (!bad && (must1 & must0) == 0u) { claimFree(&pp, S, mop, ma, mb, ${oi}u, 1u, must1); } }`);
+    }
+    free.push(lines.join('\n'));
+  });
+  const freeBlock = free.length ? `    if (rem == NONE && params.freeConst != 0u) {\n${free.join('\n')}\n    }` : '';
+
   const unaryCases = ops.map((op, i) => (op.kind === 'unary' ? `    case ${i}u: { return true; }` : '')).filter(Boolean).join('\n');
 
   return `// xorcery search kernel — ops=[${ops.map((o) => o.id).join(',')}]
@@ -179,6 +231,8 @@ struct Params {
   nConsts: u32,
   midCount: u32,                // digits in the middle slot
   nops: u32,
+  freeConst: u32,               // 1 = also try a synthesized constant in the last slot
+  pad0: u32, pad1: u32, pad2: u32,
 }
 struct Results {
   count: atomic<u32>,
@@ -235,7 +289,27 @@ fn claim(pp: ptr<function, array<u32, ${MAX_LEN}>>, S: u32, mop: u32, ma: u32, m
     for (var i = 0u; i < S; i++) { results.entries[base + i] = (*pp)[i]; }
     results.entries[base + S] = pack(mop, ma, mb);
     results.entries[base + S + 1u] = pack(lop, la, lb);
+    results.entries[base + 9u] = 0u;
   }
+}
+
+// claim a program whose last instruction uses a synthesized constant (pos 1 = op(v, c), 2 = op(c, v))
+fn claimFree(pp: ptr<function, array<u32, ${MAX_LEN}>>, S: u32, mop: u32, ma: u32, mb: u32, lop: u32, pos: u32, c: u32) {
+  let slot = atomicAdd(&results.count, 1u);
+  if (slot < ${MAX_RESULTS}u) {
+    let base = slot * ${ENTRY_WORDS}u;
+    for (var i = 0u; i < S; i++) { results.entries[base + i] = (*pp)[i]; }
+    results.entries[base + S] = pack(mop, ma, mb);
+    results.entries[base + S + 1u] = select(pack(lop, params.mid, ${FREE}u), pack(lop, ${FREE}u, params.mid), pos == 2u);
+    results.entries[base + 8u] = c;
+    results.entries[base + 9u] = 1u;
+  }
+}
+
+fn inv32(v: u32) -> u32 {
+  var x = v;
+  for (var i = 0; i < 5; i++) { x = x * (2u - v * x); }
+  return x;
 }
 
 @compute @workgroup_size(${WG})
@@ -318,6 +392,8 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid3
     }
     // ---- last slot: unrolled per op; must read the middle result ----------
 ${inner.join('\n')}
+    // ---- last slot with a synthesized constant ----------------------------
+${freeBlock}
   }
   atomicAdd(&results.evaluated, evaluated);
 }

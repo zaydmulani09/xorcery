@@ -148,7 +148,8 @@ if (has('json')) {
     length: res.L, evaluated: res.evaluated.toString(), searchMs: res.searchMs, verifyMs: res.verifyMs, exhausted: res.exhausted, error: res.error ?? null,
     solutions: res.solutions.map((s) => ({
       expr: s.expr, program: s.program,
-      c: emitFunction(res.cfg, s.program, 'c'), rust: emitFunction(res.cfg, s.program, 'rust'), js: emitFunction(res.cfg, s.program, 'js'), wgsl: emitFunction(res.cfg, s.program, 'wgsl'),
+      consts: s.cfg.consts, synthesized: s.synthesized,
+      c: emitFunction(s.cfg, s.program, 'c'), rust: emitFunction(s.cfg, s.program, 'rust'), js: emitFunction(s.cfg, s.program, 'js'), wgsl: emitFunction(s.cfg, s.program, 'wgsl'),
       verify: s.verify ? { ...s.verify, checked: s.verify.checked.toString(), passes: s.verify.passes.map((p) => ({ name: p.name, count: p.count.toString() })) } : null,
     })),
   }, null, 2));
@@ -157,7 +158,7 @@ if (has('json')) {
   console.log(`\n${res.L} instruction${res.L > 1 ? 's' : ''}:  ${s.expr}`);
   console.log(`${verifyText(res)} · ${fmt(res.evaluated)} programs searched in ${ms(res.searchMs)}`);
   if (res.solutions.length > 1) console.log('alternatives: ' + res.solutions.slice(1).map((a) => a.expr).join(' | '));
-  console.log('\n' + emitFunction(res.cfg, s.program, (flag('lang') ?? 'c') as Lang));
+  console.log('\n' + emitFunction(s.cfg, s.program, (flag('lang') ?? 'c') as Lang));
 } else {
   console.log(res.error ? `error: ${res.error}` : `no program of length ≤ ${job.maxLen} computes this with the chosen ops and constants (${fmt(res.evaluated)} tried in ${ms(res.searchMs)})`);
   Deno.exit(1);

@@ -282,10 +282,10 @@ export class App {
       for (let L = 1; L <= this.state.maxLen; L++) {
         const c = deadCodeFreeCount(space, L);
         total += c;
-        parts.push(`<span title="${fmtInt(c)} dead-code-free programs of length ${L}">L${L} <b>${fmtShort(c)}</b></span>`);
+        parts.push(`<span title="up to ${fmtInt(c)} dead-code-free programs of length ${L} (canonical ordering removes ~a third; synthesized constants add a few)">L${L} <b>≤${fmtShort(c)}</b></span>`);
       }
       const eta = this.rate > 0 ? ` · worst case ${fmtEta(Number(total) / this.rate)} at ${fmtRate(this.rate)}` : '';
-      info.innerHTML = `${spec.nInputs} input${spec.nInputs > 1 ? 's' : ''} (${['x', 'y', 'z'].slice(0, spec.nInputs).join(', ')}) · ${ops.length} ops · ${cfg.consts.length} constants · programs to try: ${parts.join(' · ')}${eta}`;
+      info.innerHTML = `${spec.nInputs} input${spec.nInputs > 1 ? 's' : ''} (${['x', 'y', 'z'].slice(0, spec.nInputs).join(', ')}) · ${ops.length} ops · ${cfg.consts.length} constants + synthesized · programs per length: ${parts.join(' · ')}${eta}`;
       return { cfg, ok: true };
     } catch (e) {
       ta.classList.add('bad');
@@ -471,7 +471,7 @@ export class App {
       const space = new Space(cfg, sol.L);
       let below = 0n;
       for (let L = 1; L < sol.L; L++) below += deadCodeFreeCount(space, L);
-      min.innerHTML = `<b>shortest possible</b> with these ${cfg.ops.length} ops and ${cfg.consts.length} constants: all <b class="num">${fmtInt(below)}</b> programs of length &lt; ${sol.L} were tried and none match.`;
+      min.innerHTML = `<b>shortest possible</b> with these ${cfg.ops.length} ops and ${cfg.consts.length} constants: all <b class="num">${fmtInt(below)}</b> programs of length &lt; ${sol.L} were tried and none match.${sol.synthesized ? ` The constant <b>${escapeHtml(fmtConstIn(sol.cfg.consts[sol.cfg.consts.length - 1]))}</b> was not in the pool — it was solved for from the samples.` : ''}`;
     } else if (cfg) {
       min.innerHTML = `a single instruction — nothing to beat.`;
     }
@@ -516,7 +516,7 @@ export class App {
     const fields = names.map((nm, i) => `<label>${nm} = <input data-i="${i}" value="${escapeHtml(fmtConstIn(this.tryInputs[i]))}" spellcheck="false" /></label>`).join('');
     const vals = this.tryInputs.slice(0, 3);
     const specV = res.spec.fn(vals[0], vals[1] ?? 0, vals[2] ?? 0) >>> 0;
-    const progV = evalProgram(res.cfg, sol.program, vals.slice(0, n)) >>> 0;
+    const progV = evalProgram(sol.cfg, sol.program, vals.slice(0, n)) >>> 0;
     const show = (v: number) => `<b class="num">${fmtConstIn(v)}</b> <span class="dim">${v >= 1024 ? '' : '0x' + v.toString(16).padStart(8, '0') + ' · '}${(v | 0) < 0 && v >= 1024 ? 'signed ' + (v | 0) + ' · ' : ''}0b${v.toString(2).padStart(32, '0').replace(/(.{8})(?=.)/g, '$1 ')}</span>`;
     box.innerHTML = `<span class="label">try it</span>${fields}<span class="arrow">→</span><span>spec ${show(specV)}</span><span>program ${show(progV)}</span><span class="${specV === progV ? 'ok' : 'bad'}">${specV === progV ? '=' : '≠'}</span>`;
     for (const inp of Array.from(box.querySelectorAll('input'))) {
@@ -539,7 +539,7 @@ export class App {
 
   private renderCode(): void {
     const sol = this.selected;
-    const cfg = this.result?.cfg ?? this.safeCfg();
+    const cfg = sol?.cfg ?? this.result?.cfg ?? this.safeCfg();
     if (!sol || !cfg) return;
     for (const b of Array.from($('.tabs').querySelectorAll('button'))) b.classList.toggle('on', b.dataset.lang === this.lang);
     const code = this.lang === 'listing' ? listing(cfg, sol.program) : emitFunction(cfg, sol.program, this.lang);

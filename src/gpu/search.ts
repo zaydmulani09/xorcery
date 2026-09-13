@@ -7,9 +7,10 @@
  * back as a new sample and let the search continue where it left off.
  */
 import {
-  NS, MAX_RESULTS, ENTRY_WORDS, WG, PARAMS_WORDS, P_START, P_RADIX, P_LIMIT, P_S, P_MID, P_FIRSTR, P_NINPUTS, P_NCONSTS, P_MIDCOUNT, P_NOPS,
+  NS, MAX_RESULTS, ENTRY_WORDS, FREE, WG, PARAMS_WORDS, P_START, P_RADIX, P_LIMIT, P_S, P_MID, P_FIRSTR, P_NINPUTS, P_NCONSTS, P_MIDCOUNT, P_NOPS, P_FREECONST,
   buildLayout, generateKernel, kernelKey, packSearchData,
 } from './kernel';
+import { freeKind, solveFreeConstant } from '../core/freeconst';
 import { Gpu } from './device';
 import { Program, Space, SpaceConfig, enumeratePrograms, evalProgram } from '../core/space';
 import { Op } from '../core/isa';
@@ -33,7 +34,8 @@ export interface SearchProgress {
 
 export type SearchEvent =
   | { type: 'progress'; progress: SearchProgress }
-  | { type: 'candidate'; program: Program; L: number }
+  /** cfg differs from the search config when the program uses a synthesized constant (appended to the pool) */
+  | { type: 'candidate'; program: Program; L: number; cfg: SpaceConfig }
   | { type: 'length-start'; L: number; prefixTotal: bigint; rawSpace: bigint; backend: 'cpu' | 'gpu' }
   | { type: 'length-done'; L: number; evaluated: bigint; elapsedMs: number }
   | { type: 'compiled'; ms: number }
@@ -51,6 +53,24 @@ export interface SearchOptions {
   targetMs?: number;
   /** stop as soon as candidates were reported at some length (default true) */
   stopAtFirstLength?: boolean;
+  /** synthesize constants in the last slot (default true) */
+  freeConst?: boolean;
+}
+
+/**
+ * Re-home a program that uses the synthesized constant `c` (operand FREE):
+ * if c is already in the pool, use that index; otherwise append it, which
+ * shifts every result index up by one.
+ */
+export function resolveFree(cfg: SpaceConfig, prog: Program, c: number): { program: Program; cfg: SpaceConfig } {
+  const n = cfg.nInputs, k = cfg.consts.length;
+  const existing = cfg.consts.indexOf(c >>> 0);
+  if (existing >= 0) {
+    return { cfg, program: prog.map((ins) => ({ op: ins.op, a: ins.a === FREE ? n + existing : ins.a, b: ins.b === FREE ? n + existing : ins.b })) };
+  }
+  const ext: SpaceConfig = { nInputs: n, consts: [...cfg.consts, c >>> 0], ops: cfg.ops };
+  const fix = (v: number) => (v === FREE ? n + k : v >= n + k ? v + 1 : v);
+  return { cfg: ext, program: prog.map((ins) => ({ op: ins.op, a: fix(ins.a), b: cfg.ops[ins.op].kind === 'unary' ? 0 : fix(ins.b) })) };
 }
 
 /** Mutable search state the caller may poke (e.g. to add a counterexample sample). */
@@ -95,13 +115,44 @@ export function precompile(gpu: Gpu, ops: Op[]): void {
   getPipeline(gpu.device, ops).catch(() => {});
 }
 
-function decodeEntry(words: Uint32Array, L: number): Program {
+function decodeEntry(cfg: SpaceConfig, words: Uint32Array, L: number): { program: Program; cfg: SpaceConfig } {
   const prog: Program = [];
   for (let i = 0; i < L; i++) {
     const w = words[i];
     prog.push({ op: w >>> 16, a: (w >>> 8) & 0xff, b: w & 0xff });
   }
-  return prog;
+  if (words[9] === 1) return resolveFree(cfg, prog, words[8]);
+  return { program: prog, cfg };
+}
+
+/**
+ * CPU-side synthesized-constant candidates for the short lengths: the last
+ * instruction is `op(v, c)` where v is an input (L = 1) or the result of a
+ * one-instruction program (L = 2).
+ */
+function freeConstCandidates(cfg: SpaceConfig, space: Space, L: number, samples: SampleSet, targets: Uint32Array): { program: Program; cfg: SpaceConfig }[] {
+  const out: { program: Program; cfg: SpaceConfig }[] = [];
+  const firstR = cfg.nInputs + cfg.consts.length;
+  const vectors: { prefix: Program; v: number[]; idx: number }[] = [];
+  if (L === 1) {
+    for (let i = 0; i < cfg.nInputs; i++) vectors.push({ prefix: [], v: Array.from(samples.inputs[i]), idx: i });
+  } else if (L === 2) {
+    for (const p of enumeratePrograms(space, 1)) {
+      const v: number[] = [];
+      for (let s = 0; s < NS; s++) v.push(evalProgram(cfg, p, sampleTuple(samples, s)));
+      vectors.push({ prefix: p, v, idx: firstR });
+    }
+  }
+  for (const { prefix, v, idx } of vectors) {
+    cfg.ops.forEach((op, oi) => {
+      if (!freeKind(op)) return;
+      const sol = solveFreeConstant(op, v, targets);
+      if (!sol) return;
+      const last = sol.pos === 'b' ? { op: oi, a: idx, b: FREE } : { op: oi, a: FREE, b: idx };
+      out.push(resolveFree(cfg, [...prefix, last], sol.c));
+    });
+  }
+  return out;
 }
 
 function matchesSamples(cfg: SpaceConfig, prog: Program, samples: SampleSet, targets: Uint32Array): boolean {
@@ -150,11 +201,20 @@ export async function* runSearch(opts: SearchOptions, session: SearchSession): A
         yield { type: 'length-start', L, prefixTotal: 1n, rawSpace: raw, backend: 'cpu' };
         let n = 0;
         let lastYield = performance.now();
+        if (opts.freeConst ?? true) {
+          for (const cand of freeConstCandidates(cfg, space, L, samples, targets)) {
+            n++;
+            if (matchesSamples(cand.cfg, cand.program, samples, targets)) {
+              yield { type: 'candidate', program: cand.program, L, cfg: cand.cfg };
+              if (aborted()) return;
+            }
+          }
+        }
         for (const prog of enumeratePrograms(space, L)) {
           n++;
           if (session.pendingSamples) { samples = session.pendingSamples.samples; targets = session.pendingSamples.targets; session.pendingSamples = null; }
           if (matchesSamples(cfg, prog, samples, targets)) {
-            yield { type: 'candidate', program: prog, L };
+            yield { type: 'candidate', program: prog, L, cfg };
             if (aborted()) return;
           }
           if ((n & 0xffff) === 0) {
@@ -242,6 +302,7 @@ export async function* runSearch(opts: SearchOptions, session: SearchSession): A
       const params = new Uint32Array(new ArrayBuffer(PARAMS_WORDS * 4));
       for (let i = 0; i < S; i++) params[P_RADIX + i] = prefixRadix[i];
       params[P_S] = S; params[P_MID] = MID; params[P_FIRSTR] = n + k; params[P_NINPUTS] = n; params[P_NCONSTS] = k; params[P_MIDCOUNT] = midCount; params[P_NOPS] = cfg.ops.length;
+      params[P_FREECONST] = (opts.freeConst ?? true) ? 1 : 0;
       let lastProgress = performance.now();
 
       while (prefixDone < prefixTotal) {
@@ -293,16 +354,16 @@ export async function* runSearch(opts: SearchOptions, session: SearchSession): A
           const nEntries = Math.min(count, MAX_RESULTS);
           const seen = new Set<string>();
           for (let e = 0; e < nEntries; e++) {
-            const prog = decodeEntry(view.subarray(4 + e * ENTRY_WORDS, 4 + e * ENTRY_WORDS + L), L);
-            const key = JSON.stringify(prog);
+            const { program: prog, cfg: pcfg } = decodeEntry(cfg, view.subarray(4 + e * ENTRY_WORDS, 4 + (e + 1) * ENTRY_WORDS), L);
+            const key = JSON.stringify(prog) + '|' + pcfg.consts.join(',');
             if (seen.has(key)) continue;
             seen.add(key);
             // tri-check: the CPU interpreter must agree with the GPU on the samples
-            if (!matchesSamples(cfg, prog, samples, targets)) {
+            if (!matchesSamples(pcfg, prog, samples, targets)) {
               yield { type: 'error', message: `GPU/CPU disagreement on candidate ${key} — please report this` };
               continue;
             }
-            yield { type: 'candidate', program: prog, L };
+            yield { type: 'candidate', program: prog, L, cfg: pcfg };
             if (aborted()) return;
           }
         }

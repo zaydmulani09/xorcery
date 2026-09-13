@@ -38,14 +38,14 @@ function tmplOf(op: Op, lang: Lang): Tmpl {
   return op[lang];
 }
 
-/** Readability rank for commutative operand ordering: inputs, temporaries, constants, expressions. */
+/** Readability rank for commutative operand ordering: inputs, temporaries, expressions, constants. */
 function rank(p: Piece): number {
   if (p.prec === P_ATOM) {
     if (/^[xyz]$/.test(p.s)) return 'xyz'.indexOf(p.s) * 0.1;
     if (/^t\d+$/.test(p.s)) return 1;
-    return 2;
+    return 3;
   }
-  return 3;
+  return 2;
 }
 
 function fill(t: Tmpl, op: Op, a: Piece, b: Piece | null, lang: Lang): Piece {
