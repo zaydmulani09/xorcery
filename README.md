@@ -29,6 +29,7 @@ Running the standard [Hacker's Delight benchmark](#benchmark) (Gulwani et al., P
 | mask of trailing zeros | `~x & (x - 1)` | also `~(x \| -x)` | same length |
 | isolate the highest set bit (with `clz`) | — | `x & (0x80000000 >> clz(x))` | correct at x = 0, where the obvious version fails |
 | absolute difference (signed) | `t = x - y; (t ^ (t>>31)) - (t>>31)` | **no correct program of ≤ 5 ops exists** in the base ISA | the textbook trick is wrong under overflow; xorcery refuses it |
+| exchange two bit fields (P19, three inputs) | 6 ops | `t = y & (x ^ (x >> z)); (t << z) ^ x ^ t` — the textbook program, and **nothing shorter exists** | found at length 6 after 101,760,512,958 candidates (8.6 min on the Iris Xe) |
 
 "Textbook" counts instructions in xorcery's ISA (a compare that yields 0/1 is one op).
 
@@ -68,6 +69,10 @@ The number of dead-code-free programs of each length is computed by a small dyna
 Dispatches are sized adaptively to ~45 ms each (Windows kills GPU contexts that hog the device), so the page stays responsive and progress is live. The kernel depends only on the op list — length, constants and slot layout arrive through buffers — so one shader compile (1–3 s on some drivers) serves every length of a search.
 
 Measured on an **Intel Iris Xe** (integrated, 96 EU): **~4.4 billion programs/s** at length 5 — the 3.9 billion canonical dead-code-free programs of length 5 over the base ISA take about one second. Discrete GPUs should be 5–20× faster. The generated kernel for the base ISA is checked in as [`docs/kernel-base.wgsl`](docs/kernel-base.wgsl) if you want to read it without running anything.
+
+### 3b. Synthesized constants
+
+The constant pool is small on purpose — every constant widens every slot — but the *last* instruction can use any 32-bit constant at no enumeration cost. For `r = v op c` the samples determine `c`: `add` gives `c = t − v`, `xor` gives `c = t ^ v`, `mul` gives `c = t · v⁻¹ (mod 2³²)` when some sample value is odd, `and`/`or` constrain `c` bit by bit (a conflict means no such constant), and shift amounts are just tried. So `(x ^ (x >> 1)) & 0x55555555` is found with the default pool of `0, 1, 31, -1` — the mask is *solved*, not searched. The result card says when a constant was synthesized.
 
 ### 4. Screening and verification (CEGIS, the honest way)
 
@@ -165,7 +170,7 @@ deno task cli --bench                                # every preset, as a markdo
 deno task cli --selftest                             # per-op GPU-vs-CPU check + search cross-check
 ```
 
-(`deno.json` turns on extension-less imports; without it use `deno run -A --sloppy-imports cli/xorcery.ts`.)
+(`deno.json` turns on extension-less imports; without it use `deno run -A --sloppy-imports cli/xorcery.ts`. Deno's WebGPU compiles the larger kernels noticeably slower than Chrome — up to ~10 s for the 16-op compare ISA, once per ISA per process.)
 
 ## Development
 
@@ -200,7 +205,7 @@ The GPU kernel is validated against the CPU enumerator: for several configuratio
 
 ## Limitations
 
-- Minimality is relative to the ISA and constant pool you chose. Constants must be in the pool — the search does not synthesise them (both-constant operands are never tried; add the folded constant instead).
+- Minimality is relative to the ISA and constant pool you chose. Only the last instruction gets a synthesized constant; constants used earlier in a program must be in the pool (both-constant operands are never tried; add the folded constant instead).
 - Straight-line code only: no branches, no loops, no memory. Comparisons produce 0/1.
 - Length 6 is minutes on an integrated GPU; length 7 is not reachable by brute force. Textbook programs longer than that (popcount, Gosper's hack, clp2) are beyond the horizon unless you add the op that shortens them.
 - Two- and three-input results are verified on billions of inputs but not proved.
