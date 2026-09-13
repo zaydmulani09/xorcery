@@ -53,6 +53,7 @@ export class App {
   private lengthTimes = new Map<number, number>();
   private lengthStart = 0;
   private rate = 0;
+  private compileNote = '';
 
   constructor(readonly root: HTMLElement) {}
 
@@ -305,6 +306,7 @@ export class App {
     this.result = null;
     this.selected = null;
     this.lengthTimes.clear();
+    this.compileNote = '';
     this.renderControls();
     this.renderResult();
     this.resetLadder();
@@ -315,7 +317,7 @@ export class App {
     const t0 = performance.now();
     try {
       const res = await runEngine(cfg, this.gpu, {
-        onStatus: (m) => this.setStatus(m),
+        onStatus: (m) => { this.setStatus(m); if (m.startsWith('kernel compiled')) this.compileNote = m; },
         onLength: (e) => {
           this.lengthStart = performance.now();
           this.updateLadder(e.L, 0n, e.prefixTotal, 'active');
@@ -351,10 +353,12 @@ export class App {
       this.result = res;
       $('#st-time').textContent = fmtMs(performance.now() - t0);
       $('#st-eval').textContent = fmtShort(res.evaluated);
+      $('#st-eval').title = fmtInt(res.evaluated) + ' programs';
+      if (this.rate > 0 && $('#st-rate').textContent === '—') $('#st-rate').textContent = fmtRate(this.rate);
       if (res.error) this.setStatus(res.error, true);
       else if (res.aborted) this.setStatus('stopped');
       else if (res.solutions.length) {
-        this.setStatus(`found ${res.solutions.length} program${res.solutions.length > 1 ? 's' : ''} of length ${res.L} in ${fmtMs(res.searchMs)} · verified in ${fmtMs(res.verifyMs)}`);
+        this.setStatus(`found ${res.solutions.length} program${res.solutions.length > 1 ? 's' : ''} of length ${res.L} in ${fmtMs(res.searchMs)}${this.compileNote ? ' (incl. ' + this.compileNote.replace('kernel compiled in ', '') + ' of one-time shader compile)' : ''} · verified in ${fmtMs(res.verifyMs)}`);
       } else this.setStatus(`no program of length ≤ ${cfg.maxLen} computes this with the chosen ops and constants (${fmtInt(res.evaluated)} tried)`);
       if (!res.solutions.length) for (let L = 1; L <= cfg.maxLen; L++) if (!this.lengthTimes.has(L)) this.updateLadder(L, 0n, 1n, 'skip');
       this.selected = res.solutions[0] ?? null;
@@ -636,6 +640,7 @@ const TEMPLATE = `
     <a href="https://github.com/zaydmulani09/xorcery" target="_blank" rel="noopener">source</a>
   </div>
 </header>
+<p class="intro">Write what a function of 32-bit words should compute. Your GPU tries <em>every</em> straight-line program over the ops you allow, shortest first, hands you the winner as C/Rust/JS/WGSL — and proves it on all 4,294,967,296 inputs.</p>
 <div id="nowebgpu" class="nowebgpu" hidden>
   <b>This browser has no WebGPU.</b> xorcery searches billions of programs per second on your GPU; without it the CPU fallback only reaches length 3.
   Chrome 113+, Edge 113+, Safari 26 and Firefox 141+ (Windows) ship WebGPU.

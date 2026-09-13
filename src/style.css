@@ -47,6 +47,9 @@ header.top .right { margin-left: auto; display: flex; gap: 14px; align-items: ce
 .gpu-badge i { width: 7px; height: 7px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 8px var(--mint); }
 .gpu-badge.off i { background: var(--red); box-shadow: 0 0 8px var(--red); }
 
+.intro { color: var(--fg2); font-family: var(--sans); font-size: 14px; line-height: 1.55; margin: -4px 0 14px; max-width: 900px; }
+.intro em { color: var(--fg); font-style: normal; }
+
 .grid { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; gap: 16px; align-items: start; }
 @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
 
