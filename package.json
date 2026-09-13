@@ -1,0 +1,24 @@
+{
+  "name": "xorcery",
+  "version": "0.1.0",
+  "description": "Your GPU rediscovers bit hacks: a WebGPU superoptimizer that finds the shortest branchless program for any function of 32-bit words and proves it on all 2^32 inputs.",
+  "private": true,
+  "type": "module",
+  "author": "Zayd Mulani <zaydmulani@gmail.com> (https://zayd.dpdns.org)",
+  "license": "MIT",
+  "repository": "github:zaydmulani09/xorcery",
+  "scripts": {
+    "dev": "vite --port 5211 --strictPort",
+    "build": "tsc --noEmit -p tsconfig.json && vite build",
+    "preview": "vite preview --port 5212",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.60",
+    "typescript": "^5.9.0",
+    "vite": "^7.1.0",
+    "vitest": "^3.2.0"
+  }
+}
