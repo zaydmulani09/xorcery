@@ -4,7 +4,9 @@
 
 Type what a function of 32-bit words should compute. xorcery brute-forces *every* straight-line program over the ops you allow — billions per second, on your GPU, in the browser — returns the shortest one, and then **proves** it by evaluating all 4,294,967,296 possible inputs.
 
-**Live: [xorcery.vercel.app](https://xorcery.vercel.app)** · zero runtime dependencies · everything runs client-side
+[![ci](https://github.com/zaydmulani09/xorcery/actions/workflows/ci.yml/badge.svg)](https://github.com/zaydmulani09/xorcery/actions/workflows/ci.yml)
+
+**Live: [xorcery.vercel.app](https://xorcery.vercel.app)** · zero runtime dependencies · everything runs client-side · also a [CLI](#command-line)
 
 ```
 spec        (int)x < 0 ? -x : x          // absolute value
@@ -49,7 +51,7 @@ The spec is compiled twice: to JavaScript for the CPU and to WGSL for the GPU, f
 
 A program is a list of instructions `r_i = op(a, b)` where `a`, `b` are inputs, pool constants, or earlier results. Each slot has a *digit* (an op and an operand pair), and a whole program is a mixed-radix number. Only *dead-code-free* programs are ever evaluated — every result except the last must be read later — because a program with an unused instruction is a shorter program in disguise, and the shorter one was already tried.
 
-The exact number of dead-code-free programs of each length is computed by a small dynamic program over "which results are still unread" (`deadCodeFreeCount` in `src/core/space.ts`). With 10 base ops, one input and four constants: 54 · 3,564 · 312,984 · 37,919,664 · 6,200,652,384 programs for lengths 1–5.
+The number of dead-code-free programs of each length is computed by a small dynamic program over "which results are still unread" (`deadCodeFreeCount` in `src/core/space.ts`). With 10 base ops, one input and four constants: 54 · 3,564 · 312,984 · 37,919,664 · 6,200,652,384 programs for lengths 1–5; canonical ordering (below) brings the search down to 54 · 3,564 · 295,164 · 30,561,564 · 3,889,886,244. The GPU's evaluated count matches the CPU enumerator's count exactly, which is how the kernel's pruning is known to be complete.
 
 ### 3. The GPU kernel
 
@@ -59,12 +61,13 @@ The exact number of dead-code-free programs of each length is computed by a smal
 - **Each thread takes a share of the middle slot's candidates**, computes that instruction's 32-sample vector into registers, and
 - **runs the last slot's inner loop**, unrolled per op by the generator: for every operand pair that reads the middle result, one ALU op and one compare per sample, exiting at the first sample that disagrees with the spec. Almost every wrong program dies on sample 0.
 - Dead code is pruned structurally: the last instruction must read the middle result, and unread prefix results must be consumed by the two remaining instructions (`needed`/`rem` in the kernel), so the kernel never decodes a program it will not evaluate.
+- Instruction order is canonical: two adjacent instructions that do not depend on each other could be swapped without changing the function, so only the order with increasing instruction keys is enumerated. Every DAG has such an order (the lexicographically smallest topological one), so nothing is lost, and ~35% of the programs at length 5 disappear — along with the work of computing their middle vectors.
 - The prefix index is a mixed-radix odometer with carry, so lengths whose prefix count exceeds 2^32 still work without 64-bit integers.
 - Matches are claimed with an atomic and written as packed instructions; the CPU re-evaluates every claimed program (the GPU/CPU "tri-check") before believing it.
 
 Dispatches are sized adaptively to ~45 ms each (Windows kills GPU contexts that hog the device), so the page stays responsive and progress is live. The kernel depends only on the op list — length, constants and slot layout arrive through buffers — so one shader compile (1–3 s on some drivers) serves every length of a search.
 
-Measured on an **Intel Iris Xe** (integrated, 96 EU): **~1.7 billion programs/s** at length 5 (6.2 B programs in 3.6 s). Discrete GPUs should be 5–20× faster.
+Measured on an **Intel Iris Xe** (integrated, 96 EU): **~4.4 billion programs/s** at length 5 — the 3.9 billion canonical dead-code-free programs of length 5 over the base ISA take about one second. Discrete GPUs should be 5–20× faster. The generated kernel for the base ISA is checked in as [`docs/kernel-base.wgsl`](docs/kernel-base.wgsl) if you want to read it without running anything.
 
 ### 4. Screening and verification (CEGIS, the honest way)
 
@@ -114,7 +117,7 @@ The 25 programs from *Synthesis of Loop-Free Programs* (Gulwani, Jha, Tiwari, Ve
 | P24 round up to power of two | 12 | none ≤ 4 | 61 ms | — |
 | P25 mulhi (with mulhi) | 1 | 1 | 6 ms | 22.5 B pairs |
 
-P19–P21 and P23–P24 have textbook solutions of 6–12 instructions; brute force at length 6 is ~2 × 10^12 programs (about 20 minutes on this GPU, a couple of minutes on a large discrete one), and length 7+ is out of reach. That is the honest horizon of exhaustive search; the point of the tool is what happens below it.
+P19–P21 and P23–P24 have textbook solutions of 6–12 instructions; brute force at length 6 is ~10^12 programs (minutes on this GPU, well under a minute on a large discrete one), and length 7+ is out of reach. That is the honest horizon of exhaustive search; the point of the tool is what happens below it.
 
 ## Spec language reference
 
@@ -150,6 +153,20 @@ const res = await runEngine(
 console.log(res.solutions[0].expr, res.solutions[0].verify);
 ```
 
+## Command line
+
+The engine has no DOM dependencies and Deno ships WebGPU, so the same code runs natively on the GPU from a terminal:
+
+```bash
+deno task cli "(int)x < 0 ? -x : x"                 # search, print the program as C
+deno task cli "x % 3 == 0" --ops base,mul,cmp,cmpx --consts 0,0xaaaaaaab,0x55555555 --len 4 --lang rust
+deno task cli --preset p18 --json                   # machine-readable: programs, code in four languages, verification report
+deno task cli --bench                                # every preset, as a markdown table
+deno task cli --selftest                             # per-op GPU-vs-CPU check + search cross-check
+```
+
+(`deno.json` turns on extension-less imports; without it use `deno run -A --sloppy-imports cli/xorcery.ts`.)
+
 ## Development
 
 ```bash
@@ -175,9 +192,11 @@ src/cpuverify.ts       worker fallback verification
 src/engine.ts          spec -> samples -> search -> screen -> verify orchestration
 src/presets.ts         Hacker's Delight P1–P25 and extras, as specifications
 src/ui/app.ts          the page
+cli/xorcery.ts         the Deno CLI
+docs/kernel-base.wgsl  the generated search kernel for the base ISA (tools/dump-kernel.ts)
 ```
 
-The GPU kernel is validated against the CPU enumerator: for several configurations the number of programs the kernel evaluates equals the CPU's dead-code-free count exactly (`npm test` checks the counting; the browser self-test checks the kernel).
+The GPU kernel is validated against the CPU enumerator: for several configurations the number of programs the kernel evaluates equals the CPU's canonical dead-code-free count exactly (`npm test` checks the counting and that canonical ordering loses no function; `deno task cli --selftest` cross-checks the kernel's candidate set against the CPU).
 
 ## Limitations
 

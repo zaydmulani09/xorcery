@@ -4,7 +4,7 @@
  * benchmark runner. Plain DOM, no framework.
  */
 import { GROUPS, OPS, OP_BY_ID, Lang } from '../core/isa';
-import { Space, SpaceConfig, deadCodeFreeCount } from '../core/space';
+import { Space, SpaceConfig, deadCodeFreeCount, evalProgram } from '../core/space';
 import { emitFunction, listing } from '../core/program';
 import { compileSpec } from '../spec/compile';
 import { SpecError } from '../spec/parser';
@@ -54,6 +54,7 @@ export class App {
   private lengthStart = 0;
   private rate = 0;
   private compileNote = '';
+  private tryInputs: number[] = [0xfffffff6, 5, 3];
 
   constructor(readonly root: HTMLElement) {}
 
@@ -491,6 +492,7 @@ export class App {
       p.innerHTML = `<span class="ico">✓</span><div><b>verified</b> on <span class="num">${fmtInt(v.checked)}</span> inputs in ${fmtMs(v.elapsedMs)} — ${v.passes.map((x) => escapeHtml(x.name)).join(', ')}.<div class="sub">not a proof: with ${v.nInputs} inputs there are 2<sup>${32 * v.nInputs}</sup> cases, too many to enumerate.</div></div>`;
     }
     this.renderCode();
+    this.renderTryIt();
     // alternatives
     const alts = $('#alts');
     alts.innerHTML = '';
@@ -500,6 +502,34 @@ export class App {
       const a = el('div', 'alt' + (s === sol ? ' on' : ''), `<span>${colorExpr(s.expr)}</span><span class="st ${s.verify ? (s.verify.mismatches ? 'bad' : 'ok') : ''}">${verifyLabel(s)}</span>`);
       a.addEventListener('click', () => { this.selected = s; this.renderResult(); });
       alts.appendChild(a);
+    }
+  }
+
+  /** "try it": evaluate spec and program on user-typed inputs. */
+  private renderTryIt(): void {
+    const sol = this.selected;
+    const res = this.result;
+    const box = $('#tryit');
+    if (!sol || !res) { box.innerHTML = ''; return; }
+    const n = res.cfg.nInputs;
+    const names = ['x', 'y', 'z'].slice(0, n);
+    const fields = names.map((nm, i) => `<label>${nm} = <input data-i="${i}" value="${escapeHtml(fmtConstIn(this.tryInputs[i]))}" spellcheck="false" /></label>`).join('');
+    const vals = this.tryInputs.slice(0, 3);
+    const specV = res.spec.fn(vals[0], vals[1] ?? 0, vals[2] ?? 0) >>> 0;
+    const progV = evalProgram(res.cfg, sol.program, vals.slice(0, n)) >>> 0;
+    const show = (v: number) => `<b class="num">${fmtConstIn(v)}</b> <span class="dim">${v >= 1024 ? '' : '0x' + v.toString(16).padStart(8, '0') + ' · '}${(v | 0) < 0 && v >= 1024 ? 'signed ' + (v | 0) + ' · ' : ''}0b${v.toString(2).padStart(32, '0').replace(/(.{8})(?=.)/g, '$1 ')}</span>`;
+    box.innerHTML = `<span class="label">try it</span>${fields}<span class="arrow">→</span><span>spec ${show(specV)}</span><span>program ${show(progV)}</span><span class="${specV === progV ? 'ok' : 'bad'}">${specV === progV ? '=' : '≠'}</span>`;
+    for (const inp of Array.from(box.querySelectorAll('input'))) {
+      inp.addEventListener('input', () => {
+        const v = parseConst(inp.value);
+        if (v === null) { inp.classList.add('bad'); return; }
+        inp.classList.remove('bad');
+        this.tryInputs[Number(inp.dataset.i)] = v;
+        const active = document.activeElement === inp;
+        const pos = inp.selectionStart;
+        this.renderTryIt();
+        if (active) { const again = $(`#tryit input[data-i="${inp.dataset.i}"]`) as HTMLInputElement; again.focus(); if (pos !== null) again.setSelectionRange(pos, pos); }
+      });
     }
   }
 
@@ -680,6 +710,7 @@ const TEMPLATE = `
       <div id="result" class="stack" hidden>
         <div class="headline"><div class="len" id="r-len"></div></div>
         <div class="expr" id="r-expr"></div>
+        <div class="tryit" id="tryit"></div>
         <div class="proof" id="proof"></div>
         <div class="minimal" id="minimal"></div>
         <div id="altwrap" hidden><h2>alternatives at the same length</h2><div id="alts" class="alts"></div></div>
