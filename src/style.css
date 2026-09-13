@@ -51,7 +51,15 @@ header.top .right { margin-left: auto; display: flex; gap: 14px; align-items: ce
 .intro em { color: var(--fg); font-style: normal; }
 
 .grid { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; gap: 16px; align-items: start; }
-@media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+@media (max-width: 860px) {
+  .grid { grid-template-columns: 1fr; }
+  /* single column: spec, then the result (the payoff), then the search telemetry */
+  .grid > .stack { display: contents; }
+  #specpanel { order: 1; }
+  #resultpanel { order: 2; }
+  #searchpanel { order: 3; }
+  .app { padding: 12px 12px 40px; }
+}
 
 .panel { background: var(--bg2); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
 .panel h2 { margin: 0 0 10px; font-size: 11px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg3); display: flex; align-items: center; gap: 8px; }

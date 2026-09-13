@@ -677,7 +677,7 @@ const TEMPLATE = `
 </div>
 <div class="grid">
   <div class="stack">
-    <section class="panel stack">
+    <section class="panel stack" id="specpanel">
       <h2>spec <span class="hint">C syntax · 32-bit words · <span class="kbd">Ctrl</span>+<span class="kbd">Enter</span> to search</span></h2>
       <textarea id="spec" class="spec" spellcheck="false" autocapitalize="off"></textarea>
       <div id="specerr" class="spec-error"></div>
@@ -691,7 +691,7 @@ const TEMPLATE = `
       </div>
       <div class="actions"><button id="run" class="btn primary">Search</button><button id="share" class="btn">Share link</button></div>
     </section>
-    <section class="panel stack">
+    <section class="panel stack" id="searchpanel">
       <h2>search <span class="hint">dead-code-free straight-line programs</span></h2>
       <div class="stats">
         <div class="stat"><div class="k">programs tried</div><div class="v num" id="st-eval">0</div></div>
