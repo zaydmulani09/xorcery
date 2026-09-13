@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as U from './u32';
 import { OPS, opsForGroups } from './isa';
-import { Space, SpaceConfig, deadCodeFreeCount, enumeratePrograms, evalProgram, isDeadCodeFree, Program } from './space';
+import { Space, SpaceConfig, deadCodeFreeCount, enumeratePrograms, evalProgram, isCanonical, isDeadCodeFree, Program } from './space';
 import { compileToJs, emitFunction, exprString, printProgram } from './program';
 
 describe('u32 semantics', () => {
@@ -110,13 +110,13 @@ describe('program space', () => {
       }
     }
   });
-  it('enumeratePrograms yields exactly the dead-code-free programs, in id order', () => {
+  it('enumeratePrograms yields exactly the canonical dead-code-free programs, in id order', () => {
     for (let L = 1; L <= 3; L++) {
       let count = 0;
       let lastId = -1n;
       let bad = 0;
       for (const p of enumeratePrograms(space, L)) {
-        if (!isDeadCodeFree(cfg, p)) bad++;
+        if (!isDeadCodeFree(cfg, p) || !isCanonical(cfg, p)) bad++;
         const id = space.encode(p);
         if (!(id > lastId)) bad++;
         lastId = id;
@@ -128,15 +128,36 @@ describe('program space', () => {
         // brute-force count over all raw ids
         let brute = 0;
         const total = Number(space.rawCount(L));
-        for (let id = 0; id < total; id++) if (isDeadCodeFree(cfg, space.decode(L, BigInt(id)))) brute++;
+        for (let id = 0; id < total; id++) {
+          const p = space.decode(L, BigInt(id));
+          if (isDeadCodeFree(cfg, p) && isCanonical(cfg, p)) brute++;
+        }
         expect(count).toBe(brute);
       }
     }
-    // known count for this configuration (1 input, consts [0,1,31], base ops), length 3
+    // known counts for this configuration (1 input, consts [0,1,31], base ops)
     let n3 = 0;
     for (const _ of enumeratePrograms(space, 3)) n3++;
-    expect(n3).toBe(170856);
+    expect(n3).toBeLessThan(170856); // the dead-code-free count without canonical ordering
+    expect(n3).toBeGreaterThan(100000);
   }, 20000);
+  it('canonical ordering keeps every function: each pruned program has a canonical equivalent', () => {
+    // for every dead-code-free length-3 program that is NOT canonical, some canonical program
+    // of the same length computes the same values on a sample set
+    const xs = [0, 1, 2, 3, 0x80000000, 0xffffffff, 12345678, 0x7fffffff, 0xdeadbeef, 100];
+    const sig = (p: Program) => xs.map((x) => evalProgram(cfg, p, [x])).join(',');
+    const canonical = new Set<string>();
+    for (const p of enumeratePrograms(space, 3)) canonical.add(sig(p));
+    const total = Number(space.rawCount(3));
+    let checked = 0;
+    for (let id = 0; id < total; id += 7) {
+      const p = space.decode(3, BigInt(id));
+      if (!isDeadCodeFree(cfg, p) || isCanonical(cfg, p)) continue;
+      expect(canonical.has(sig(p))).toBe(true);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(1000);
+  }, 30000);
   it('finds the classic x & (x - 1) by CPU enumeration at length 2', () => {
     const target = (x: number) => U.and(x, U.sub(x, 1));
     const samples = [0, 1, 2, 3, 0x80000000, 0xffffffff, 12345678, 0x7fffffff];
@@ -205,7 +226,7 @@ describe('printer / emitters', () => {
 });
 
 describe('dead-code-free counting', () => {
-  it('matches enumeration for several configurations', () => {
+  it('matches a brute-force dead-code-free count (canonical ordering not applied)', () => {
     const configs: [SpaceConfig, number, number[]][] = [
       [{ nInputs: 1, consts: [0, 1, 31], ops: opsForGroups(['base']) }, 3, [42, 2268, 170856]],
       [{ nInputs: 1, consts: [0, 1], ops: opsForGroups(['base']) }, 4, [30, 1260, 78840, 7199280]],
@@ -216,13 +237,14 @@ describe('dead-code-free counting', () => {
       const space = new Space(cfg, maxL);
       for (let L = 1; L <= maxL; L++) expect(Number(deadCodeFreeCount(space, L))).toBe(expected[L - 1]);
     }
-    // and against a fresh enumeration for a config not listed above
+    // and against a fresh brute force for a config not listed above
     const cfg: SpaceConfig = { nInputs: 2, consts: [0], ops: opsForGroups(['base', 'bits']) };
     const space = new Space(cfg, 3);
     for (let L = 1; L <= 3; L++) {
       let n = 0;
-      for (const _ of enumeratePrograms(space, L)) n++;
+      const total = Number(space.rawCount(L));
+      for (let id = 0; id < total; id++) if (isDeadCodeFree(cfg, space.decode(L, BigInt(id)))) n++;
       expect(Number(deadCodeFreeCount(space, L))).toBe(n);
     }
-  });
+  }, 30000);
 });

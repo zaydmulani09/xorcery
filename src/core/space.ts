@@ -183,6 +183,33 @@ export function isDeadCodeFree(cfg: SpaceConfig, prog: Program): boolean {
   return (usedResults(cfg, prog) & need) === need;
 }
 
+/** Order key of an instruction: op-major, then operands. Slot-independent. */
+export function instrKey(cfg: SpaceConfig, ins: Instr): number {
+  const b = cfg.ops[ins.op].kind === 'unary' ? 0 : ins.b;
+  return (ins.op << 16) | (ins.a << 8) | b;
+}
+
+function reads(cfg: SpaceConfig, ins: Instr, v: number): boolean {
+  return ins.a === v || (cfg.ops[ins.op].kind !== 'unary' && ins.b === v);
+}
+
+/**
+ * Canonical instruction order. Two adjacent instructions that do not depend
+ * on each other can be swapped without changing the function, so only one
+ * order is enumerated: if instruction i+1 does not read r_i, its key must be
+ * strictly greater than instruction i's key (equal keys would be the same
+ * computation twice). Every DAG has a topological order that satisfies this
+ * (the lexicographically smallest one), so nothing is lost.
+ */
+export function isCanonical(cfg: SpaceConfig, prog: Program): boolean {
+  const r0 = firstResult(cfg);
+  for (let i = 0; i + 1 < prog.length; i++) {
+    if (reads(cfg, prog[i + 1], r0 + i)) continue;
+    if (instrKey(cfg, prog[i + 1]) <= instrKey(cfg, prog[i])) return false;
+  }
+  return true;
+}
+
 /** Evaluate a program on one input vector. Returns the u32 output. */
 export function evalProgram(cfg: SpaceConfig, prog: Program, inputs: number[]): number {
   const n = cfg.nInputs, k = cfg.consts.length;
@@ -209,6 +236,8 @@ export function* enumeratePrograms(space: Space, L: number): Generator<Program> 
     const c = space.slotCount(slot);
     for (let d = 0; d < c; d++) {
       prog[slot] = space.decodeDigit(slot, d);
+      // canonical-order pruning applies to every adjacent pair, so check it as we go
+      if (slot > 0 && !reads(cfg, prog[slot], firstResult(cfg) + slot - 1) && instrKey(cfg, prog[slot]) <= instrKey(cfg, prog[slot - 1])) continue;
       if (slot === L - 1) {
         if (isDeadCodeFree(cfg, prog)) yield prog.slice();
       } else {
@@ -235,10 +264,14 @@ export function programToString(cfg: SpaceConfig, prog: Program): string {
 }
 
 /**
- * Exact number of dead-code-free programs of length L, by dynamic programming
- * over the set of results that are still unread. Each slot's candidates are
+ * Number of dead-code-free programs of length L, by dynamic programming over
+ * the set of results that are still unread. Each slot's candidates are
  * grouped by which results they consume, so the cost is (#states x #pairs)
  * per slot: microseconds, even for L = 8.
+ *
+ * This ignores the canonical-order rule (`isCanonical`), so it is an upper
+ * bound on what the search evaluates — typically 1.3–2x the exact number,
+ * which the search reports afterwards.
  */
 export function deadCodeFreeCount(space: Space, L: number): bigint {
   if (L <= 0) return 0n;

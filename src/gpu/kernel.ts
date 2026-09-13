@@ -14,10 +14,13 @@
  * last instruction must read the middle result (otherwise the middle
  * instruction is dead); prefix results that no prefix instruction reads must
  * be read by the middle or the last instruction, and there are only three
- * operand slots left to do it with. Together these rules make the kernel
- * evaluate exactly the dead-code-free programs of length L — the CPU
- * enumerator in `core/space.ts` is the reference for that claim and the tests
- * compare the two counts.
+ * operand slots left to do it with. Instruction order is canonical: an
+ * instruction that does not read the previous result must have a larger key
+ * (`isCanonical` in core/space.ts), which removes the permutations of
+ * independent instructions. Together these rules make the kernel evaluate
+ * exactly the canonical dead-code-free programs of length L — the CPU
+ * enumerator in `core/space.ts` is the reference for that claim and the
+ * browser self-test compares the two.
  *
  * The kernel depends only on the list of enabled ops. Program length, input
  * count, constants and the per-slot digit layout all arrive through buffers,
@@ -272,6 +275,12 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid3
   let needed = ((1u << S) - 1u) & ~used;
   // the middle instruction can absorb two unread results and the last one more
   if (countOneBits(needed) > 3u) { skip = true; }
+  // canonical order: an instruction that does not read the previous result must have a larger key
+  for (var i = 1u; i < S; i++) {
+    let prev = params.firstR + i - 1u;
+    let dep = (pa[i] == prev) || (!isUnary(pop[i]) && pb[i] == prev);
+    if (!dep && pp[i] <= pp[i - 1u]) { skip = true; }
+  }
 
   // ---- cooperative prefix evaluation: thread s computes sample s ----------
   if (lid < ${NS}u && !skip) {
@@ -296,6 +305,12 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid3
     var needed2 = needed & ~resultBit(ma);
     if (!isUnary(mop)) { needed2 &= ~resultBit(mb); }
     if (countOneBits(needed2) > 1u) { continue; }
+    if (S > 0u) {
+      // canonical order against the last prefix instruction
+      let prev = mid - 1u;
+      let dep = (ma == prev) || (!isUnary(mop) && mb == prev);
+      if (!dep && pack(mop, ma, mb) <= pp[S - 1u]) { continue; }
+    }
     let rem = select(NONE, params.firstR + countTrailingZeros(needed2), needed2 != 0u);
     var mv: array<u32, ${NS}>;
     for (var s = 0u; s < ${NS}u; s++) {
