@@ -6,6 +6,8 @@ Type what a function of 32-bit words should compute. xorcery brute-forces *every
 
 [![ci](https://github.com/zaydmulani09/xorcery/actions/workflows/ci.yml/badge.svg)](https://github.com/zaydmulani09/xorcery/actions/workflows/ci.yml)
 
+[![xorcery](public/og.png)](https://xorcery.vercel.app)
+
 **Live: [xorcery.vercel.app](https://xorcery.vercel.app)** · zero runtime dependencies · everything runs client-side · also a [CLI](#command-line)
 
 ```
