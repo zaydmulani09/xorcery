@@ -216,10 +216,12 @@ export async function verifyProgram(opts: VerifyOptions): Promise<VerifyReport> 
   device.queue.writeBuffer(outBuf, 0, new Uint32Array(new ArrayBuffer(outSize)));
 
   // ---- spot check: does the GPU compute what the CPU computes? ----------------
+  let latencyMs = 0;
   {
     const params = new Uint32Array(new ArrayBuffer(16));
     params[1] = 10; params[2] = SPECIAL.length;
     device.queue.writeBuffer(paramsBuf, 0, params);
+    const tl = performance.now();
     const enc = device.createCommandEncoder();
     const cp = enc.beginComputePass();
     cp.setPipeline(pipeline);
@@ -229,6 +231,7 @@ export async function verifyProgram(opts: VerifyOptions): Promise<VerifyReport> 
     enc.copyBufferToBuffer(outBuf, 0, stagingBuf, 0, outSize);
     device.queue.submit([enc.finish()]);
     await stagingBuf.mapAsync(GPUMapMode.READ);
+    latencyMs = performance.now() - tl; // a 512-input dispatch: essentially pure round-trip latency
     const view = new Uint32Array(stagingBuf.getMappedRange().slice(0));
     stagingBuf.unmap();
     const n = SPECIAL.length;
@@ -279,7 +282,9 @@ export async function verifyProgram(opts: VerifyOptions): Promise<VerifyReport> 
         base += covered;
         done += step;
         if (wg === workgroups) {
-          const scale = Math.min(2.5, Math.max(0.3, targetMs / Math.max(ms, 1)));
+          // the spot-check dispatch above measured the round-trip latency; size for GPU time, not polling time
+          const gpuMs = Math.max(ms - latencyMs, 1);
+          const scale = Math.min(2.5, Math.max(0.3, Math.max(targetMs, 4 * latencyMs) / gpuMs));
           workgroups = Math.max(16, Math.min(maxWg, Math.round(workgroups * scale)));
         }
         const count = view[0];

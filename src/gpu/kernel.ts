@@ -100,7 +100,8 @@ function wgslExpr(op: Op, a: string, b: string): string {
 }
 
 function helperSource(ops: Op[]): string {
-  const need = new Set<string>();
+  // clz32/ctz32 (and popcnt32, which ctz32 uses) are also needed by the shift-amount solvers
+  const need = new Set<string>(['clz', 'ctz', 'popcnt']);
   for (const op of ops) if (op.wgsl.helper) need.add(op.wgsl.helper);
   for (const h of Array.from(need)) for (const d of HELPER_DEPS[h] ?? []) need.add(d);
   return Object.keys(HELPERS.wgsl).filter((h) => need.has(h)).map((h) => HELPERS.wgsl[h]).join('\n');
@@ -183,11 +184,20 @@ export function generateKernel(ops: Op[]): string {
     if (!kind) return;
     const V = 'mv[s]';
     const lines: string[] = [`      // ---- ${op.id} with a synthesized constant ----`];
-    if (kind === 'shift') {
+    if (op.id === 'rotl' || op.id === 'rotr') {
       lines.push(`      for (var c = 0u; c < 32u; c++) {`);
       lines.push(freeCheck(wgslExpr(op, V, 'c'), 0));
       lines.push(`        if (ok) { claimFree(&pp, S, mop, ma, mb, ${oi}u, 1u, c); }`);
       lines.push(`      }`);
+    } else if (op.id === 'shr' || op.id === 'shl' || op.id === 'sar') {
+      // the amount follows from one sample with a nonzero (and, for sar, not all-ones) target
+      const pick = op.id === 'sar'
+        ? `if (tg[s] != 0u && tg[s] != 0xffffffffu) { let neg = (mv[s] & 0x80000000u) != 0u; let d = select(clz32(tg[s]) - clz32(mv[s]), clz32(~tg[s]) - clz32(~mv[s]), neg); c = select(NONE, d, d < 32u); break; }`
+        : op.id === 'shr'
+          ? `if (tg[s] != 0u) { let d = clz32(tg[s]) - clz32(mv[s]); c = select(NONE, d, d < 32u); break; }`
+          : `if (tg[s] != 0u) { let d = ctz32(tg[s]) - ctz32(mv[s]); c = select(NONE, d, d < 32u); break; }`;
+      lines.push(`      { var c = 31u; for (var s = 0u; s < ${NS}u; s++) { ${pick} }`);
+      lines.push(`        if (c != NONE) {`, freeCheck(wgslExpr(op, V, 'c'), 0), `          if (ok) { claimFree(&pp, S, mop, ma, mb, ${oi}u, 1u, c); } } }`);
     } else if (op.id === 'add') {
       lines.push(`      { let c = tg[0] - mv[0];`, freeCheck(wgslExpr(op, V, 'c')), `        if (ok) { claimFree(&pp, S, mop, ma, mb, ${oi}u, 1u, c); } }`);
     } else if (op.id === 'xor') {
@@ -200,12 +210,12 @@ export function generateKernel(ops: Op[]): string {
       lines.push(`        if (s0 != NONE) { let c = tg[s0] * inv32(mv[s0]);`, freeCheck(wgslExpr(op, V, 'c'), 0), `          if (ok) { claimFree(&pp, S, mop, ma, mb, ${oi}u, 1u, c); } } }`);
     } else if (op.id === 'and') {
       lines.push(`      { var must1 = 0u; var must0 = 0u; var bad = false;`);
-      lines.push(`        for (var s = 0u; s < ${NS}u; s++) { if ((tg[s] & ~mv[s]) != 0u) { bad = true; break; } must1 |= mv[s] & tg[s]; must0 |= mv[s] & ~tg[s]; }`);
+      lines.push(`        for (var s = 0u; s < ${NS}u; s++) { if ((tg[s] & ~mv[s]) != 0u) { bad = true; break; } must1 |= mv[s] & tg[s]; must0 |= mv[s] & ~tg[s]; if ((must1 & must0) != 0u) { bad = true; break; } }`);
       lines.push(`        evaluated += 1u;`);
       lines.push(`        if (!bad && (must1 & must0) == 0u) { claimFree(&pp, S, mop, ma, mb, ${oi}u, 1u, must1); } }`);
     } else if (op.id === 'or') {
       lines.push(`      { var must1 = 0u; var must0 = 0u; var bad = false;`);
-      lines.push(`        for (var s = 0u; s < ${NS}u; s++) { if ((mv[s] & ~tg[s]) != 0u) { bad = true; break; } must1 |= tg[s] & ~mv[s]; must0 |= ~tg[s]; }`);
+      lines.push(`        for (var s = 0u; s < ${NS}u; s++) { if ((mv[s] & ~tg[s]) != 0u) { bad = true; break; } must1 |= tg[s] & ~mv[s]; must0 |= ~tg[s]; if ((must1 & must0) != 0u) { bad = true; break; } }`);
       lines.push(`        evaluated += 1u;`);
       lines.push(`        if (!bad && (must1 & must0) == 0u) { claimFree(&pp, S, mop, ma, mb, ${oi}u, 1u, must1); } }`);
     }
@@ -236,8 +246,8 @@ struct Params {
 }
 struct Results {
   count: atomic<u32>,
-  evaluated: atomic<u32>,
-  pad0: u32,
+  evaluated: atomic<u32>,     // low 32 bits of the programs-evaluated counter
+  evaluatedHi: atomic<u32>,   // carries out of the low word
   pad1: u32,
   entries: array<u32>,
 }
@@ -315,7 +325,7 @@ fn inv32(v: u32) -> u32 {
 @compute @workgroup_size(${WG})
 fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid3: vec3<u32>) {
   let lid = lid3.x;
-  let wgi = wg.x;
+  let wgi = wg.x + wg.y * 65535u;   // 2-D dispatch: more than 65535 workgroups per submit
   let S = params.S;
   let mid = params.mid;
   let n = params.nInputs;
@@ -395,7 +405,8 @@ ${inner.join('\n')}
     // ---- last slot with a synthesized constant ----------------------------
 ${freeBlock}
   }
-  atomicAdd(&results.evaluated, evaluated);
+  let old = atomicAdd(&results.evaluated, evaluated);
+  if (old + evaluated < old) { atomicAdd(&results.evaluatedHi, 1u); }
 }
 `;
 }

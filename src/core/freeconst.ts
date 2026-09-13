@@ -11,12 +11,15 @@
  *   xor:  c = t ^ v            mul:  c = t * v^-1 (mod 2^32), needs an odd v
  *   and:  c has a 1 where t has a 1 (v must too), a 0 where v has a 1 and t a 0
  *   or:   c has a 1 where t has a 1 and v a 0, a 0 where t has a 0 (v must too)
- *   shl/shr/sar/rotl/rotr:  the amount is one of 32 values — try them all
+ *   shr:  c = clz(t) - clz(v) on a sample with t != 0      shl: c = ctz(t) - ctz(v)
+ *   sar:  like shr, counting leading ones when v is negative
+ *   rotl/rotr:  the amount is one of 32 values — try them all
  *
  * The same rules run on the GPU (kernel.ts) and here on the CPU (for lengths
  * 1–2 and for re-checking GPU claims).
  */
 import { Op } from './isa';
+import { clz, ctz } from './u32';
 
 export type FreeKind = 'b' | 'a' | 'shift';
 
@@ -87,7 +90,25 @@ export function solveFreeConstant(op: Op, v: ArrayLike<number>, t: ArrayLike<num
       if ((must1 & must0) !== 0) return null;
       return check(must1 >>> 0, 'b');
     }
-    case 'shl': case 'shr': case 'sar': case 'rotl': case 'rotr': {
+    case 'shr': {
+      // t = v >> c: for a sample with t != 0 the amount is the change in leading zeros
+      for (let s = 0; s < n; s++) if (t[s] !== 0) { const c = clz(t[s]) - clz(v[s]); return c >= 0 && c < 32 ? check(c, 'b') : null; }
+      return check(31, 'b');
+    }
+    case 'shl': {
+      for (let s = 0; s < n; s++) if (t[s] !== 0) { const c = ctz(t[s]) - ctz(v[s]); return c >= 0 && c < 32 ? check(c, 'b') : null; }
+      return check(31, 'b');
+    }
+    case 'sar': {
+      for (let s = 0; s < n; s++) {
+        if (t[s] === 0 || (t[s] >>> 0) === 0xffffffff) continue;
+        const neg = (v[s] & 0x80000000) !== 0;
+        const c = neg ? clz(~t[s] >>> 0) - clz(~v[s] >>> 0) : clz(t[s]) - clz(v[s]);
+        return c >= 0 && c < 32 ? check(c, 'b') : null;
+      }
+      return check(31, 'b');
+    }
+    case 'rotl': case 'rotr': {
       for (let c = 0; c < 32; c++) { const r = check(c, 'b'); if (r) return r; }
       return null;
     }
@@ -98,7 +119,7 @@ export function solveFreeConstant(op: Op, v: ArrayLike<number>, t: ArrayLike<num
 /** Number of "programs" a free-constant attempt counts as (for the evaluated counter). */
 export function freeAttempts(op: Op): number {
   switch (freeKind(op)) {
-    case 'shift': return 32;
+    case 'shift': return op.id === 'rotl' || op.id === 'rotr' ? 32 : 1;
     case 'b': case 'a': return op.id === 'sub' ? 2 : 1;
     default: return 0;
   }

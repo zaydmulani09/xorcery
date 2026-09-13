@@ -167,6 +167,7 @@ export async function* runSearch(opts: SearchOptions, session: SearchSession): A
   let samples = opts.samples;
   let targets = opts.targets;
   const targetMs = opts.targetMs ?? 45;
+  let latencyMs = -1;
   const space = new Space(cfg, maxLen);
   const t0 = performance.now();
   let evaluated = 0n;
@@ -285,14 +286,10 @@ export async function* runSearch(opts: SearchOptions, session: SearchSession): A
       }
       const resultsSize = 16 + MAX_RESULTS * ENTRY_WORDS * 4;
 
-      // candidates per workgroup upper bound, to keep the u32 'evaluated' counter from wrapping
       const n = cfg.nInputs, k = cfg.consts.length;
       const MID = n + k + S;
-      let maxInner = 0;
-      for (const op of cfg.ops) maxInner += op.kind === 'unary' ? 1 : op.kind === 'comm' ? MID + 1 : 2 * MID + 1;
-      const perWorkgroup = BigInt(midCount) * BigInt(maxInner);
-      const wgCap = Number(3_000_000_000n / (perWorkgroup === 0n ? 1n : perWorkgroup));
-      const maxWg = Math.max(16, Math.min(gpu.info.maxWorkgroupsPerDimension, 65535, wgCap));
+      // dispatches are 2-D (x up to 65535, y for the rest); the evaluated counter carries into a second word
+      const maxWg = 65535 * 64;
 
       let workgroups = Math.min(maxWg, 256);
       let prefixDone = 0n;
@@ -304,6 +301,29 @@ export async function* runSearch(opts: SearchOptions, session: SearchSession): A
       params[P_S] = S; params[P_MID] = MID; params[P_FIRSTR] = n + k; params[P_NINPUTS] = n; params[P_NCONSTS] = k; params[P_MIDCOUNT] = midCount; params[P_NOPS] = cfg.ops.length;
       params[P_FREECONST] = (opts.freeConst ?? true) ? 1 : 0;
       let lastProgress = performance.now();
+
+      // Round-trip latency of an empty dispatch (submit -> readback). In a browser it is ~1 ms; in
+      // Deno's WebGPU it can be ~100 ms of polling. Dispatches are sized so the GPU work dwarfs it.
+      if (latencyMs < 0) {
+        params[P_LIMIT] = 0;
+        device.queue.writeBuffer(res.paramsBuf, 0, params);
+        const tl = performance.now();
+        for (let i = 0; i < 2; i++) {
+          const enc = device.createCommandEncoder();
+          enc.clearBuffer(res.resultsBuf, 0, 16);
+          const pass = enc.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, res.bindGroup);
+          pass.dispatchWorkgroups(1);
+          pass.end();
+          enc.copyBufferToBuffer(res.resultsBuf, 0, res.stagingBuf, 0, resultsSize);
+          device.queue.submit([enc.finish()]);
+          await res.stagingBuf.mapAsync(GPUMapMode.READ);
+          res.stagingBuf.unmap();
+        }
+        latencyMs = (performance.now() - tl) / 2;
+      }
+      const targetGpuMs = Math.max(targetMs, 4 * latencyMs);
 
       while (prefixDone < prefixTotal) {
         if (aborted()) return;
@@ -326,7 +346,7 @@ export async function* runSearch(opts: SearchOptions, session: SearchSession): A
         const pass = enc.beginComputePass();
         pass.setPipeline(pipeline);
         pass.setBindGroup(0, res.bindGroup);
-        pass.dispatchWorkgroups(limit);
+        pass.dispatchWorkgroups(Math.min(limit, 65535), Math.ceil(limit / 65535));
         pass.end();
         enc.copyBufferToBuffer(res.resultsBuf, 0, res.stagingBuf, 0, resultsSize);
         const td = performance.now();
@@ -336,14 +356,15 @@ export async function* runSearch(opts: SearchOptions, session: SearchSession): A
         const view = new Uint32Array(res.stagingBuf.getMappedRange().slice(0));
         res.stagingBuf.unmap();
         const count = view[0];
-        const evalCount = BigInt(view[1]);
+        const evalCount = BigInt(view[1]) + (BigInt(view[2]) << 32n);
         prefixDone += BigInt(limit);
         evaluated += evalCount;
         evaluatedThisLength += evalCount;
         dispatches++;
         msPerDispatch = ms;
         if (limit === workgroups) {
-          const scale = Math.min(2.5, Math.max(0.3, targetMs / Math.max(ms, 1)));
+          const gpuMs = Math.max(ms - latencyMs, 1);
+          const scale = Math.min(2.5, Math.max(0.3, targetGpuMs / gpuMs));
           workgroups = Math.max(16, Math.min(maxWg, Math.round(workgroups * scale)));
         }
         const now = performance.now();
