@@ -80,7 +80,7 @@ export function getPipeline(device: GPUDevice, ops: Op[]): Promise<GPUComputePip
       const errs = ci.messages.filter((x) => x.type === 'error');
       if (errs.length) throw new Error('shader compile error: ' + errs.map((e) => `${e.lineNum}:${e.linePos} ${e.message}`).join('\n'));
       const pipeline = await device.createComputePipelineAsync({ layout: 'auto', compute: { module, entryPoint: 'main' } });
-      console.log(`[xorcery] search kernel [${key}] compiled in ${(performance.now() - t0).toFixed(0)} ms`);
+      void t0;
       return pipeline;
     })();
     m.set(key, p);

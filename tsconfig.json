@@ -16,5 +16,5 @@
     "noEmit": true,
     "resolveJsonModule": true
   },
-  "include": ["src", "cli", "tools"]
+  "include": ["src"]
 }

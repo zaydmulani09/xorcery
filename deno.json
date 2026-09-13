@@ -1,0 +1,9 @@
+{
+  "unstable": ["sloppy-imports"],
+  "tasks": {
+    "cli": "deno run --allow-all cli/xorcery.ts"
+  },
+  "compilerOptions": {
+    "lib": ["deno.window", "dom"]
+  }
+}
