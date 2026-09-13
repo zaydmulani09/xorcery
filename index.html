@@ -3,10 +3,20 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>xorcery</title>
+<title>xorcery — your GPU rediscovers bit hacks</title>
+<meta name="description" content="A WebGPU superoptimizer. Type a function of 32-bit words; xorcery brute-forces every straight-line program on your GPU, finds the shortest one, and proves it on all 4,294,967,296 inputs." />
+<meta property="og:title" content="xorcery — your GPU rediscovers bit hacks" />
+<meta property="og:description" content="A WebGPU superoptimizer: type a function, your GPU finds the shortest branchless program and proves it on all 2^32 inputs." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://xorcery.vercel.app/" />
+<meta property="og:image" content="https://xorcery.vercel.app/og.png" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="theme-color" content="#0a0c10" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
-<pre id="log" style="font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap;"></pre>
+<div id="app" class="app"></div>
 <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

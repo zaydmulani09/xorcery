@@ -71,13 +71,21 @@ function lit(v: number, lang: Lang): string {
 
 export class Emitter {
   helpers = new Set<string>();
+  /** user variables (statement names) — emitted with a v_ prefix to dodge keywords and inputs */
+  locals = new Set<string>();
   constructor(readonly lang: Lang) {}
 
+  /**
+   * Substitute operands into a template. Every non-atomic operand is wrapped
+   * in parentheses: WGSL refuses to mix `&` with `-` (or `<<` with `+`)
+   * without them, and the output is for machines, not for reading.
+   */
   private use(t: Tpl, a: string, b?: string, c?: string): string {
     if (t.helper) this.helpers.add(t.helper);
-    let s = t.t.replace('$a', a);
-    if (b !== undefined) s = s.replace('$b', b);
-    if (c !== undefined) s = s.replace('$c', c);
+    const paren = (x: string) => (/^[A-Za-z_][A-Za-z0-9_]*$|^(0x[0-9a-fA-F]+|\d+)u?$/.test(x) ? x : `(${x})`);
+    let s = t.t.replace('$a', paren(a));
+    if (b !== undefined) s = s.replace('$b', paren(b));
+    if (c !== undefined) s = s.replace('$c', paren(c));
     return s;
   }
 
@@ -85,7 +93,7 @@ export class Emitter {
     const L = this.lang;
     switch (n.k) {
       case 'num': return lit(n.v, L);
-      case 'var': return n.name;
+      case 'var': return ['x', 'y', 'z'].includes(n.name) && !this.locals.has(n.name) ? n.name : 'v_' + n.name;
       case 'cast': return this.expr(n.e);
       case 'un': {
         const e = this.expr(n.e);
@@ -163,7 +171,7 @@ export interface CompiledSpec {
 export function emitJs(ast: SpecAst, fnName = 'spec'): string {
   const em = new Emitter('js');
   const body: string[] = [];
-  for (const s of ast.stmts) body.push(`  let ${s.name} = ${em.expr(s.e)};`);
+  for (const s of ast.stmts) { const e = em.expr(s.e); em.locals.add(s.name); body.push(`  let v_${s.name} = ${e};`); }
   const result = em.expr(ast.result);
   return [...em.helperSource(), `function ${fnName}(x, y, z) {`, '  x >>>= 0; y >>>= 0; z >>>= 0;', ...body, `  return ${result};`, '}'].join('\n');
 }
@@ -171,7 +179,7 @@ export function emitJs(ast: SpecAst, fnName = 'spec'): string {
 export function emitWgsl(ast: SpecAst, fnName = 'spec'): string {
   const em = new Emitter('wgsl');
   const body: string[] = [];
-  for (const s of ast.stmts) body.push(`  let ${s.name} = ${em.expr(s.e)};`);
+  for (const s of ast.stmts) { const e = em.expr(s.e); em.locals.add(s.name); body.push(`  let v_${s.name} = ${e};`); }
   const result = em.expr(ast.result);
   return [...em.helperSource(), `fn ${fnName}(x: u32, y: u32, z: u32) -> u32 {`, ...body, `  return ${result};`, '}'].join('\n');
 }

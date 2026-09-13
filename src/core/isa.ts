@@ -21,7 +21,7 @@ import * as U from './u32';
 
 export type OpKind = 'comm' | 'noncomm' | 'unary';
 export type OpGroup = 'base' | 'mul' | 'bits' | 'cmp' | 'cmpx' | 'rot' | 'minmax' | 'div';
-export type Lang = 'c' | 'rust' | 'js' | 'wgsl';
+export type Lang = 'c' | 'rust' | 'js' | 'wgsl' | 'spec';
 
 export interface Tmpl {
   /** template with $a / $b placeholders */
@@ -44,6 +44,8 @@ export interface Op {
   rust: Tmpl;
   js: Tmpl;
   wgsl: Tmpl;
+  /** display form: the spec language itself, so a result can be pasted back as a spec */
+  spec: Tmpl;
 }
 
 export const P_UN = 14, P_MUL = 13, P_ADD = 12, P_SHIFT = 11, P_CMP = 10, P_EQ = 9, P_AND = 8, P_XOR = 7, P_OR = 6, P_CALL = 15;
@@ -55,12 +57,24 @@ const call1 = (name: string, helper?: string): Tmpl => ({ t: `${name}($a)`, prec
 const inf = (sym: string, prec: number): Tmpl => ({ t: `$a ${sym} $b`, prec });
 const T = (t: string, prec = P_CALL, helper?: string): Tmpl => ({ t, prec, helper });
 
+/** Display templates (spec-language syntax) where the C template is too noisy. */
+const SPEC_TMPL: Record<string, Tmpl> = {
+  sar: T('(int)$a >> $b', P_SHIFT),
+  eq: T('($a == $b)'), ne: T('($a != $b)'),
+  ult: T('($a < $b)'), ule: T('($a <= $b)'),
+  slt: T('((int)$a < (int)$b)'), sle: T('((int)$a <= (int)$b)'),
+  clz: call1('clz'), ctz: call1('ctz'), popcnt: call1('popcnt'),
+  rotl: call('rotl'), rotr: call('rotr'), bswap: call1('bswap'), brev: call1('brev'),
+  umin: call('min'), umax: call('max'), smin: call('smin'), smax: call('smax'),
+  udiv: inf('/', P_MUL), urem: inf('%', P_MUL), mulhi: call('mulhi'),
+};
+
 function op(
   id: string, desc: string, group: OpGroup, kind: OpKind, self: boolean,
   fn: (a: number, b: number) => number,
   c: Tmpl, rust: Tmpl, js: Tmpl, wgsl: Tmpl,
 ): Op {
-  return { id, desc, group, kind, self, fn, c, rust, js, wgsl };
+  return { id, desc, group, kind, self, fn, c, rust, js, wgsl, spec: SPEC_TMPL[id] ?? c };
 }
 
 export const OPS: Op[] = [
@@ -81,7 +95,7 @@ export const OPS: Op[] = [
     inf('>>', P_SHIFT), T('$a.wrapping_shr($b)'), T('($a >>> ($b & 31))'), T('$a >> ($b & 31u)', P_SHIFT)),
   op('sar', 'a >> b (arithmetic)', 'base', 'noncomm', true, U.sar,
     T('(uint32_t)((int32_t)$a >> $b)', P_UN), T('(($a as i32).wrapping_shr($b)) as u32', P_UN),
-    T('(($a >> ($b & 31)) >>> 0)'), T('u32(i32($a) >> ($b & 31u))')),
+    T('(($a >> ($b & 31)) >>> 0)'), T('bitcast<u32>(bitcast<i32>($a) >> ($b & 31u))')),
   op('not', '~a', 'base', 'unary', true, U.not,
     T('~$a', P_UN), T('!$a', P_UN), T('(~$a >>> 0)'), T('~$a', P_UN)),
   op('neg', '-a', 'base', 'unary', true, U.neg,
@@ -106,14 +120,14 @@ export const OPS: Op[] = [
     T('(uint32_t)($a < $b)', P_UN), T('($a < $b) as u32', P_UN), T('(+($a < $b))'), T('u32($a < $b)')),
   op('slt', 'a < b (signed) ? 1 : 0', 'cmp', 'noncomm', false, U.slt,
     T('(uint32_t)((int32_t)$a < (int32_t)$b)', P_UN), T('(($a as i32) < ($b as i32)) as u32', P_UN),
-    T('(+(($a | 0) < ($b | 0)))'), T('u32(i32($a) < i32($b))')),
+    T('(+(($a | 0) < ($b | 0)))'), T('u32(bitcast<i32>($a) < bitcast<i32>($b))')),
   op('ne', 'a != b ? 1 : 0', 'cmpx', 'comm', false, U.ne,
     T('(uint32_t)($a != $b)', P_UN), T('($a != $b) as u32', P_UN), T('(+($a !== $b))'), T('u32($a != $b)')),
   op('ule', 'a <= b (unsigned) ? 1 : 0', 'cmpx', 'noncomm', false, U.ule,
     T('(uint32_t)($a <= $b)', P_UN), T('($a <= $b) as u32', P_UN), T('(+($a <= $b))'), T('u32($a <= $b)')),
   op('sle', 'a <= b (signed) ? 1 : 0', 'cmpx', 'noncomm', false, U.sle,
     T('(uint32_t)((int32_t)$a <= (int32_t)$b)', P_UN), T('(($a as i32) <= ($b as i32)) as u32', P_UN),
-    T('(+(($a | 0) <= ($b | 0)))'), T('u32(i32($a) <= i32($b))')),
+    T('(+(($a | 0) <= ($b | 0)))'), T('u32(bitcast<i32>($a) <= bitcast<i32>($b))')),
   // ---- rotate / byte ops ------------------------------------------------
   op('rotl', 'rotate left', 'rot', 'noncomm', true, U.rotl,
     call('rotl32', 'rotl'), T('$a.rotate_left($b & 31)'), call('rotl32', 'rotl'), call('rotl32', 'rotl')),
@@ -129,9 +143,9 @@ export const OPS: Op[] = [
   op('umax', 'max (unsigned)', 'minmax', 'comm', false, U.umax,
     call('umax32', 'umax'), T('$a.max($b)'), call('Math.max'), call('max')),
   op('smin', 'min (signed)', 'minmax', 'comm', false, U.smin,
-    call('smin32', 'smin'), T('(($a as i32).min($b as i32)) as u32', P_UN), call('smin32', 'smin'), T('u32(min(i32($a), i32($b)))')),
+    call('smin32', 'smin'), T('(($a as i32).min($b as i32)) as u32', P_UN), call('smin32', 'smin'), T('bitcast<u32>(min(bitcast<i32>($a), bitcast<i32>($b)))')),
   op('smax', 'max (signed)', 'minmax', 'comm', false, U.smax,
-    call('smax32', 'smax'), T('(($a as i32).max($b as i32)) as u32', P_UN), call('smax32', 'smax'), T('u32(max(i32($a), i32($b)))')),
+    call('smax32', 'smax'), T('(($a as i32).max($b as i32)) as u32', P_UN), call('smax32', 'smax'), T('bitcast<u32>(max(bitcast<i32>($a), bitcast<i32>($b)))')),
   // ---- division ---------------------------------------------------------
   op('udiv', 'a / b (unsigned; x/0 = 0xFFFFFFFF)', 'div', 'noncomm', true, U.udiv,
     call('udiv32', 'udiv'), call('udiv32', 'udiv'), call('udiv32', 'udiv'), call('udiv32', 'udiv')),
@@ -164,6 +178,7 @@ export function opsForIds(ids: Iterable<string>): Op[] {
 
 /** Helper routines referenced by templates, per language. */
 export const HELPERS: Record<Lang, Record<string, string>> = {
+  spec: {},
   c: {
     clz: 'static inline uint32_t clz32(uint32_t x) { return x ? (uint32_t)__builtin_clz(x) : 32u; }',
     ctz: 'static inline uint32_t ctz32(uint32_t x) { return x ? (uint32_t)__builtin_ctz(x) : 32u; }',

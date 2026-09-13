@@ -30,6 +30,7 @@ export function fmtLit(v: number, lang: Lang): string {
     case 'wgsl': return isSmall ? `${v}u` : `${hex}u`;
     case 'rust': return isSmall ? `${v}` : hex;
     case 'js': return isSmall ? `${v}` : hex;
+    case 'spec': return v < 1024 ? `${v}` : v >= 0xfffff000 ? `${v - 0x100000000}` : hex;
   }
 }
 
@@ -124,11 +125,14 @@ export function printProgram(cfg: SpaceConfig, prog: Program, lang: Lang): Print
   return { temps, expr: pieces[L - 1].s, helpers: ordered };
 }
 
-/** Human-readable one-liner (C syntax, temporaries shown inline as "t0 = ...;"). */
+/**
+ * Human-readable one-liner in spec-language syntax (temporaries shown inline
+ * as "t0 = ...;"), so a result can be pasted straight back in as a spec.
+ */
 export function exprString(cfg: SpaceConfig, prog: Program): string {
-  const p = printProgram(cfg, prog, 'c');
+  const p = printProgram(cfg, prog, 'spec');
   const temps = p.temps.map(([n, e]) => `${n} = ${e}; `).join('');
-  return (temps + p.expr).replace(/\b(\d+)u\b/g, '$1').replace(/(0x[0-9a-f]+)u\b/g, '$1');
+  return temps + p.expr;
 }
 
 export function listing(cfg: SpaceConfig, prog: Program): string {

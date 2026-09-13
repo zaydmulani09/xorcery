@@ -177,7 +177,7 @@ describe('printer / emitters', () => {
     const xor = cfg.ops.findIndex((o) => o.id === 'xor');
     const sub = cfg.ops.findIndex((o) => o.id === 'sub');
     const prog: Program = [{ op: sar, a: 0, b: 1 }, { op: xor, a: 2, b: 0 }, { op: sub, a: 3, b: 2 }];
-    expect(exprString(cfg, prog)).toBe('t0 = (uint32_t)((int32_t)x >> 31); (x ^ t0) - t0');
+    expect(exprString(cfg, prog)).toBe('t0 = (int)x >> 31; (x ^ t0) - t0');
     const p = printProgram(cfg, prog, 'rust');
     expect(p.temps.length).toBe(1);
     expect(p.expr).toBe('(x ^ t0).wrapping_sub(t0)');
