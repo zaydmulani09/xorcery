@@ -41,7 +41,7 @@ function tmplOf(op: Op, lang: Lang): Tmpl {
 /** Readability rank for commutative operand ordering: inputs, temporaries, constants, expressions. */
 function rank(p: Piece): number {
   if (p.prec === P_ATOM) {
-    if (/^[xyz]$/.test(p.s)) return 0;
+    if (/^[xyz]$/.test(p.s)) return 'xyz'.indexOf(p.s) * 0.1;
     if (/^t\d+$/.test(p.s)) return 1;
     return 2;
   }
@@ -56,9 +56,9 @@ function fill(t: Tmpl, op: Op, a: Piece, b: Piece | null, lang: Lang): Piece {
     if (p.prec >= P_CALL) return p.s;
     if (isMethod && slot === 'a') return `(${p.s})`;
     if (p.prec === P_UN) {
-      // "a - -b" and "a + +b" read badly; "!!x" is fine.
+      // "a - -b" and "a + +b" read badly; "x & -x" is fine.
       const first = p.s[0];
-      if (isInfix && (first === '-' || first === '+')) return `(${p.s})`;
+      if (isInfix && (first === '-' || first === '+') && (op.id === 'add' || op.id === 'sub')) return `(${p.s})`;
       return p.s;
     }
     // p is an infix expression

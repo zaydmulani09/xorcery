@@ -10,6 +10,7 @@ import { compileSpec } from '../spec/compile';
 import { SpecError } from '../spec/parser';
 import { getGpu, Gpu, hasWebGpu } from '../gpu/device';
 import { precompile } from '../gpu/search';
+import { selfTest } from '../gpu/selftest';
 import { runEngine, EngineResult, Solution, EngineConfig } from '../engine';
 import { PRESETS, Preset, DEFAULT_CONSTS, presetById } from '../presets';
 import { fmtInt, fmtShort, fmtRate, fmtMs, fmtEta, fmtConstIn, parseConst, escapeHtml, colorExpr } from './format';
@@ -76,8 +77,9 @@ export class App {
       this.gpu = await getGpu((reason) => this.setStatus(`GPU device lost: ${reason}`, true));
       if (this.gpu) {
         badge.querySelector('span')!.textContent = this.gpu.info.name;
-        // warm the two most common kernels while the user reads the page
+        // warm the most common kernel while the user reads the page
         precompile(this.gpu, OPS.filter((o) => o.group === 'base'));
+        this.runSelfTest();
       } else {
         badge.classList.add('off');
         badge.querySelector('span')!.textContent = 'WebGPU unavailable';
@@ -86,6 +88,29 @@ export class App {
     }
     // the page is the demo: run the loaded spec straight away
     this.search();
+  }
+
+  /** Check every op's GPU arithmetic against the CPU and cross-check one search; warn about broken ops. */
+  private async runSelfTest(): Promise<void> {
+    if (!this.gpu) return;
+    try {
+      const rep = await selfTest(this.gpu, false);
+      const badge = $('#gpu');
+      if (rep.ok) {
+        badge.title = `GPU self-test passed: all ${OPS.length} ops agree with the CPU (${rep.ms.toFixed(0)} ms)`;
+      } else {
+        badge.classList.add('off');
+        const list = rep.badOps.map((b) => `${b.op}(${fmtConstIn(b.a)}, ${fmtConstIn(b.b)}) = ${b.gpu} on the GPU, ${b.cpu} on the CPU`).join('; ');
+        this.setStatus(`GPU self-test FAILED — this driver miscompiles: ${list}. Those ops were disabled; results that use them could not be trusted.`, true);
+        for (const b of rep.badOps) this.state.ops.delete(b.op);
+        this.renderControls();
+        this.refreshSpecInfo();
+      }
+      $('#selftest').textContent = rep.ok ? `self-test: ${OPS.length}/${OPS.length} ops OK` : `self-test: ${rep.badOps.length} op(s) broken`;
+      $('#selftest').className = 'spec-info ' + (rep.ok ? '' : 'err');
+    } catch (e) {
+      $('#selftest').textContent = 'self-test failed to run: ' + String((e as Error).message ?? e);
+    }
   }
 
   // ------------------------------------------------------------ state helpers
@@ -456,7 +481,7 @@ export class App {
       p.innerHTML = `<span class="ico">✗</span><div><b>rejected</b> — differs from the spec at ${v.counterexamples.map((c) => 'x=' + fmtConstIn(c[0]) + (c.length > 1 ? ', y=' + fmtConstIn(c[1]) : '') + (c.length > 2 ? ', z=' + fmtConstIn(c[2]) : '')).slice(0, 3).join('; ')}<div class="sub">the search learned this counterexample and continued</div></div>`;
     } else if (v.mode === 'exhaustive') {
       p.className = 'proof ok';
-      p.innerHTML = `<span class="ico">✓</span><div><b>proved</b> — identical to the spec on all <span class="num">${fmtInt(v.checked)}</span> possible inputs (every 32-bit x), checked on the GPU in ${fmtMs(v.elapsedMs)}.</div>`;
+      p.innerHTML = `<span class="ico">✓</span><div><b>proved</b> — identical to the spec on all <span class="num">${fmtInt(v.checked)}</span> possible inputs (every 32-bit x), checked on the ${v.backend === 'cpu' ? 'CPU (the GPU failed its spot check)' : 'GPU'} in ${fmtMs(v.elapsedMs)}.</div>`;
     } else {
       p.className = 'proof ok';
       p.innerHTML = `<span class="ico">✓</span><div><b>verified</b> on <span class="num">${fmtInt(v.checked)}</span> inputs in ${fmtMs(v.elapsedMs)} — ${v.passes.map((x) => escapeHtml(x.name)).join(', ')}.<div class="sub">not a proof: with ${v.nInputs} inputs there are 2<sup>${32 * v.nInputs}</sup> cases, too many to enumerate.</div></div>`;
@@ -596,8 +621,9 @@ function verifyLabel(s: Solution, long = false): string {
   const v = s.verify;
   if (!v) return long ? 'matches all samples (no GPU verification)' : 'samples';
   if (v.mismatches) return long ? `rejected (counterexample x=${fmtConstIn(v.counterexamples[0]?.[0] ?? 0)})` : 'rejected';
-  if (v.mode === 'exhaustive') return long ? `proved on all ${fmtInt(v.checked)} inputs` : 'proved 2^32';
-  return long ? `verified on ${fmtInt(v.checked)} inputs (not exhaustive)` : `verified ${fmtShort(v.checked)}`;
+  const cpu = v.backend === 'cpu' ? ' (CPU)' : '';
+  if (v.mode === 'exhaustive') return long ? `proved on all ${fmtInt(v.checked)} inputs${cpu}` : 'proved 2^32' + cpu;
+  return long ? `verified on ${fmtInt(v.checked)} inputs (not exhaustive)${cpu}` : `verified ${fmtShort(v.checked)}${cpu}`;
 }
 
 const TEMPLATE = `
@@ -606,6 +632,7 @@ const TEMPLATE = `
   <div class="tag">your GPU rediscovers bit hacks</div>
   <div class="right">
     <span class="gpu-badge" id="gpu"><i></i><span>…</span></span>
+    <span id="selftest" class="spec-info"></span>
     <a href="https://github.com/zaydmulani09/xorcery" target="_blank" rel="noopener">source</a>
   </div>
 </header>

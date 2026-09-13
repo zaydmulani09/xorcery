@@ -24,7 +24,7 @@
  * so one (slow, ~2 s on some drivers) shader compile serves every length of a
  * search and every preset that uses the same ISA.
  */
-import { Op } from '../core/isa';
+import { HELPERS, HELPER_DEPS, Op } from '../core/isa';
 import { PAIR_KINDS, PairKind, Space, pairKind } from '../core/space';
 
 export const NS = 32; // samples per search
@@ -88,23 +88,11 @@ function wgslExpr(op: Op, a: string, b: string): string {
   return op.wgsl.t.replace('$a', a).replace('$b', b);
 }
 
-const WGSL_HELPERS: Record<string, string> = {
-  rotl: 'fn rotl32(x: u32, n: u32) -> u32 { let s = n & 31u; return (x << s) | (x >> ((32u - s) & 31u)); }',
-  rotr: 'fn rotr32(x: u32, n: u32) -> u32 { let s = n & 31u; return (x >> s) | (x << ((32u - s) & 31u)); }',
-  bswap: 'fn bswap32(x: u32) -> u32 { return (x >> 24u) | ((x >> 8u) & 0xff00u) | ((x << 8u) & 0xff0000u) | (x << 24u); }',
-  udiv: 'fn udiv32(a: u32, b: u32) -> u32 { return select(a / b, 0xffffffffu, b == 0u); }',
-  urem: 'fn urem32(a: u32, b: u32) -> u32 { return select(a % b, a, b == 0u); }',
-  mulhi: 'fn mulhi32(a: u32, b: u32) -> u32 { let al = a & 0xffffu; let ah = a >> 16u; let bl = b & 0xffffu; let bh = b >> 16u; let lo = al * bl; let m1 = ah * bl; let m2 = al * bh; let hi = ah * bh; let c = ((lo >> 16u) + (m1 & 0xffffu) + (m2 & 0xffffu)) >> 16u; return hi + (m1 >> 16u) + (m2 >> 16u) + c; }',
-};
-
 function helperSource(ops: Op[]): string {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const op of ops) {
-    const h = op.wgsl.helper;
-    if (h && !seen.has(h)) { seen.add(h); out.push(WGSL_HELPERS[h]); }
-  }
-  return out.join('\n');
+  const need = new Set<string>();
+  for (const op of ops) if (op.wgsl.helper) need.add(op.wgsl.helper);
+  for (const h of Array.from(need)) for (const d of HELPER_DEPS[h] ?? []) need.add(d);
+  return Object.keys(HELPERS.wgsl).filter((h) => need.has(h)).map((h) => HELPERS.wgsl[h]).join('\n');
 }
 
 /** Cache key: the kernel text depends only on the op list. */

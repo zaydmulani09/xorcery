@@ -37,6 +37,7 @@ export const DEFAULT_CONSTS = [0, 1, 31, 0xffffffff];
 export const BASE: OpGroup[] = ['base'];
 export const BASE_CMP: OpGroup[] = ['base', 'cmp'];
 export const BASE_BITS: OpGroup[] = ['base', 'bits'];
+export const BASE_CMPX: OpGroup[] = ['base', 'cmp', 'cmpx'];
 
 export const PRESETS: Preset[] = [
   // ---- Hacker's Delight benchmark ---------------------------------------
@@ -49,9 +50,9 @@ export const PRESETS: Preset[] = [
   { id: 'p7', group: 'hd', name: 'P7 · isolate the rightmost 0-bit', spec: '~x & (x + 1)', note: 'HD 2-1.', size: 3, groups: BASE },
   { id: 'p8', group: 'hd', name: 'P8 · mask of the trailing 0s', spec: '~x & (x - 1)', note: 'HD 2-1.', size: 3, groups: BASE },
   { id: 'p9', group: 'hd', name: 'P9 · absolute value, no branches', spec: '(int)x < 0 ? -x : x', note: 'HD 2-4: (x ^ (x >> 31)) - (x >> 31) with an arithmetic shift.', size: 3, groups: BASE },
-  { id: 'p10', group: 'hd', name: 'P10 · same number of leading zeros?', spec: 'clz(x) == clz(y)', note: 'HD 5-3: nlz(x) == nlz(y) iff (x ^ y) <= (x & y), unsigned.', size: 3, groups: BASE_CMP },
-  { id: 'p11', group: 'hd', name: 'P11 · fewer leading zeros than y?', spec: 'clz(x) < clz(y)', note: 'HD 5-3: nlz(x) < nlz(y) iff (x & ~y) > y, unsigned.', size: 3, groups: BASE_CMP },
-  { id: 'p12', group: 'hd', name: 'P12 · leading zeros ≤ y’s?', spec: 'clz(x) <= clz(y)', note: 'HD 5-3.', size: 3, groups: BASE_CMP },
+  { id: 'p10', group: 'hd', name: 'P10 · same number of leading zeros?', spec: 'clz(x) == clz(y)', note: 'HD 5-3: nlz(x) == nlz(y) iff (x ^ y) <= (x & y), unsigned.', size: 3, groups: BASE_CMPX },
+  { id: 'p11', group: 'hd', name: 'P11 · fewer leading zeros than y?', spec: 'clz(x) < clz(y)', note: 'HD 5-3: nlz(x) < nlz(y) iff (x & ~y) > y, unsigned.', size: 3, groups: BASE_CMPX },
+  { id: 'p12', group: 'hd', name: 'P12 · leading zeros ≤ y’s?', spec: 'clz(x) <= clz(y)', note: 'HD 5-3.', size: 3, groups: BASE_CMPX },
   { id: 'p13', group: 'hd', name: 'P13 · sign function', spec: '(int)x < 0 ? -1 : (x == 0 ? 0 : 1)', note: 'HD 2-7: (x >> 31) | (-x >>> 31).', size: 4, groups: BASE },
   { id: 'p14', group: 'hd', name: 'P14 · floor average, no overflow', spec: '(x >> 1) + (y >> 1) + (x & y & 1)', note: 'HD 2-5: (x & y) + ((x ^ y) >> 1).', size: 4, groups: BASE },
   { id: 'p15', group: 'hd', name: 'P15 · ceiling average, no overflow', spec: '(x >> 1) + (y >> 1) + ((x | y) & 1)', note: 'HD 2-5: (x | y) - ((x ^ y) >> 1).', size: 4, groups: BASE },
@@ -69,14 +70,14 @@ export const PRESETS: Preset[] = [
   // ---- extras -----------------------------------------------------------
   { id: 'sext8', group: 'extra', name: 'sign-extend a byte', spec: '(x & 0x80) != 0 ? (x | 0xffffff00) : (x & 0xff)', note: 'Classic answer: (x << 24) >> 24 with an arithmetic shift. Or ((x + 128) & 255) - 128.', size: 2, groups: BASE, consts: [24, 0xff, 128] },
   { id: 'half', group: 'extra', name: 'signed halve, round toward zero', spec: '(int)x / 2', note: 'HD 10-1: (x + (x >>> 31)) >> 1 with an arithmetic shift.', size: 3, groups: BASE },
-  { id: 'ctz', group: 'extra', name: 'trailing zeros without ctz', spec: 'ctz(x)', note: 'HD 5-4: popcnt(~x & (x - 1)), or 31 - clz(x & -x) which is wrong at x = 0.', size: 3, ops: ['add', 'sub', 'and', 'or', 'xor', 'shl', 'shr', 'sar', 'not', 'neg', 'popcnt', 'clz'], consts: [0, 1, 31, 32, 0xffffffff] },
+  { id: 'ctz', group: 'extra', name: 'trailing zeros without ctz', spec: 'ctz(x)', note: 'HD 5-4: popcnt(~x & (x - 1)), or 31 - clz(x & -x) which is wrong at x = 0.', size: 4, ops: ['add', 'sub', 'and', 'or', 'xor', 'shl', 'shr', 'sar', 'not', 'neg', 'popcnt', 'clz'], consts: [0, 1, 31, 32, 0xffffffff] },
   { id: 'hibit', group: 'extra', name: 'isolate the highest 1-bit', spec: 'x == 0 ? 0 : (1 << (31 - clz(x)))', note: 'With clz: 0x80000000 >> clz(x) — but the shift amount is masked, so x = 0 needs care.', size: 3, ops: ['add', 'sub', 'and', 'or', 'xor', 'shl', 'shr', 'sar', 'not', 'neg', 'clz'], consts: [0, 1, 31, 0x80000000, 0xffffffff] },
   { id: 'umin', group: 'extra', name: 'unsigned min, no branches', spec: 'x < y ? x : y', note: 'HD 2-19: y ^ ((x ^ y) & -(x < y)) needs a compare; y + ((x - y) & ((x - y) >> 31)) is a famous *wrong* answer (overflow).', size: 5, groups: BASE_CMP },
   { id: 'zbyte', group: 'extra', name: 'does the word contain a zero byte?', spec: '(x & 0xff) == 0 || (x & 0xff00) == 0 || (x & 0xff0000) == 0 || (x & 0xff000000) == 0', note: 'HD 6-1: (x - 0x01010101) & ~x & 0x80808080 is nonzero iff some byte is zero. Here the spec wants a 0/1 answer.', size: 5, groups: BASE_CMP, consts: [0, 0x01010101, 0x80808080] },
-  { id: 'absdiff', group: 'extra', name: 'absolute difference (signed)', spec: '(int)x < (int)y ? y - x : x - y', note: 'Textbook: t = x - y; (t ^ (t >> 31)) - (t >> 31). Note it is only correct where x - y does not overflow — the search will tell you.', size: 4, groups: BASE },
+  { id: 'absdiff', group: 'extra', name: 'absolute difference (signed)', spec: '(int)x < (int)y ? y - x : x - y', note: 'The famous 4-op answer t = x - y; (t ^ (t >> 31)) - (t >> 31) is WRONG when x - y overflows (try x = INT_MIN, y = 1). The search refuses it and shows that no correct 5-op program exists in the base ISA.', size: 4, groups: BASE, hard: true },
   { id: 'round8', group: 'extra', name: 'round up to a multiple of 8', spec: '(x + 7) & ~7', note: 'Two ops with the constant -8 in the pool; three without.', size: 2, groups: BASE, consts: [0, 1, 7, 8, 0xfffffff8] },
   { id: 'rev2', group: 'extra', name: 'swap adjacent bit pairs', spec: '((x >> 2) & 0x33333333) | ((x & 0x33333333) << 2)', note: 'One step of a bit reversal. The search knows the mask trick or finds another.', size: 5, groups: BASE, consts: [2, 0x33333333, 0xcccccccc] },
-  { id: 'sqrtish', group: 'extra', name: 'is x a multiple of 3? (no division)', spec: 'x % 3 == 0', note: 'Multiply by the modular inverse: x * 0xaaaaaaab <= 0x55555555. Needs multiply and compare.', size: 2, groups: ['base', 'mul', 'cmp'], consts: [0, 0xaaaaaaab, 0x55555555] },
+  { id: 'mod3', group: 'extra', name: 'is x a multiple of 3? (no division)', spec: 'x % 3 == 0', note: 'Multiply by the modular inverse: x * 0xaaaaaaab <= 0x55555555. Needs multiply and an unsigned compare.', size: 2, groups: ['base', 'mul', 'cmp', 'cmpx'], consts: [0, 0xaaaaaaab, 0x55555555] },
 ];
 
 export function presetById(id: string): Preset | undefined {

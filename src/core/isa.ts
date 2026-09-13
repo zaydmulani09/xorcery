@@ -107,12 +107,15 @@ export const OPS: Op[] = [
     call('mulhi32', 'mulhi'), T('(($a as u64 * $b as u64) >> 32) as u32', P_UN),
     call('mulhi32', 'mulhi'), call('mulhi32', 'mulhi')),
   // ---- bit counting -----------------------------------------------------
+  // WGSL has countLeadingZeros/countTrailingZeros/countOneBits/reverseBits, but at least one
+  // shipping driver (Intel Iris Xe, D3D12, Sept 2026) miscompiles countOneBits(~x & (x - 1)):
+  // it returned x. The bit-trick versions below are used everywhere on the GPU instead.
   op('clz', 'count leading zeros (clz(0)=32)', 'bits', 'unary', true, U.clz,
-    call1('clz32', 'clz'), T('$a.leading_zeros()'), call1('Math.clz32'), call1('countLeadingZeros')),
+    call1('clz32', 'clz'), T('$a.leading_zeros()'), call1('Math.clz32'), call1('clz32', 'clz')),
   op('ctz', 'count trailing zeros (ctz(0)=32)', 'bits', 'unary', true, U.ctz,
-    call1('ctz32', 'ctz'), T('$a.trailing_zeros()'), call1('ctz32', 'ctz'), call1('countTrailingZeros')),
+    call1('ctz32', 'ctz'), T('$a.trailing_zeros()'), call1('ctz32', 'ctz'), call1('ctz32', 'ctz')),
   op('popcnt', 'population count', 'bits', 'unary', true, U.popcnt,
-    call1('popcnt32', 'popcnt'), T('$a.count_ones()'), call1('popcnt32', 'popcnt'), call1('countOneBits')),
+    call1('popcnt32', 'popcnt'), T('$a.count_ones()'), call1('popcnt32', 'popcnt'), call1('popcnt32', 'popcnt')),
   // ---- compare ----------------------------------------------------------
   op('eq', 'a == b ? 1 : 0', 'cmp', 'comm', false, U.eq,
     T('(uint32_t)($a == $b)', P_UN), T('($a == $b) as u32', P_UN), T('(+($a === $b))'), T('u32($a == $b)')),
@@ -136,7 +139,7 @@ export const OPS: Op[] = [
   op('bswap', 'byte swap', 'rot', 'unary', true, U.bswap,
     call1('bswap32', 'bswap'), T('$a.swap_bytes()'), call1('bswap32', 'bswap'), call1('bswap32', 'bswap')),
   op('brev', 'bit reverse', 'rot', 'unary', true, U.brev,
-    call1('brev32', 'brev'), T('$a.reverse_bits()'), call1('brev32', 'brev'), call1('reverseBits')),
+    call1('brev32', 'brev'), T('$a.reverse_bits()'), call1('brev32', 'brev'), call1('brev32', 'brev')),
   // ---- min / max --------------------------------------------------------
   op('umin', 'min (unsigned)', 'minmax', 'comm', false, U.umin,
     call('umin32', 'umin'), T('$a.min($b)'), call('Math.min'), call('min')),
@@ -213,6 +216,10 @@ export const HELPERS: Record<Lang, Record<string, string>> = {
     mulhi: 'const mulhi32 = (a, b) => Number((BigInt(a) * BigInt(b)) >> 32n) >>> 0;',
   },
   wgsl: {
+    popcnt: 'fn popcnt32(v: u32) -> u32 { var x = v; x = x - ((x >> 1u) & 0x55555555u); x = (x & 0x33333333u) + ((x >> 2u) & 0x33333333u); x = (x + (x >> 4u)) & 0x0f0f0f0fu; return (x * 0x01010101u) >> 24u; }',
+    clz: 'fn clz32(v: u32) -> u32 { var x = v; var n = 0u; var t = select(0u, 16u, (x & 0xffff0000u) == 0u); n += t; x <<= t; t = select(0u, 8u, (x & 0xff000000u) == 0u); n += t; x <<= t; t = select(0u, 4u, (x & 0xf0000000u) == 0u); n += t; x <<= t; t = select(0u, 2u, (x & 0xc0000000u) == 0u); n += t; x <<= t; t = select(0u, 1u, (x & 0x80000000u) == 0u); n += t; return select(n, 32u, v == 0u); }',
+    ctz: 'fn ctz32(v: u32) -> u32 { return popcnt32(~v & (v - 1u)); }',
+    brev: 'fn brev32(v: u32) -> u32 { var x = v; x = ((x >> 1u) & 0x55555555u) | ((x & 0x55555555u) << 1u); x = ((x >> 2u) & 0x33333333u) | ((x & 0x33333333u) << 2u); x = ((x >> 4u) & 0x0f0f0f0fu) | ((x & 0x0f0f0f0fu) << 4u); return (x >> 24u) | ((x >> 8u) & 0xff00u) | ((x << 8u) & 0xff0000u) | (x << 24u); }',
     rotl: 'fn rotl32(x: u32, n: u32) -> u32 { let s = n & 31u; return (x << s) | (x >> ((32u - s) & 31u)); }',
     rotr: 'fn rotr32(x: u32, n: u32) -> u32 { let s = n & 31u; return (x >> s) | (x << ((32u - s) & 31u)); }',
     bswap: 'fn bswap32(x: u32) -> u32 { return (x >> 24u) | ((x >> 8u) & 0xff00u) | ((x << 8u) & 0xff0000u) | (x << 24u); }',
@@ -223,4 +230,4 @@ export const HELPERS: Record<Lang, Record<string, string>> = {
 };
 
 /** The JS-side dependency order for helpers (brev needs bswap). */
-export const HELPER_DEPS: Record<string, string[]> = { brev: ['bswap'] };
+export const HELPER_DEPS: Record<string, string[]> = { brev: ['bswap'], ctz: ['popcnt'] };

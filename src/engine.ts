@@ -15,6 +15,7 @@ import { compileSpec, CompiledSpec } from './spec/compile';
 import { Gpu } from './gpu/device';
 import { runSearch, SearchProgress, SearchSession } from './gpu/search';
 import { quickCheck, verifyProgram, VerifyReport } from './gpu/verify';
+import { verifyOnCpu } from './cpuverify';
 import { NS } from './gpu/kernel';
 
 export interface EngineConfig {
@@ -75,10 +76,17 @@ export function buildConfig(spec: CompiledSpec, opIds: string[], consts: number[
   return { nInputs: spec.nInputs, consts: uniq, ops };
 }
 
-/** Replace the last sample with a counterexample (keeps NS fixed). */
-function withCounterexample(samples: SampleSet, spec: CompiledSpec, ce: number[]): { samples: SampleSet; targets: Uint32Array } {
+/**
+ * Fold a counterexample into the sample set. The last CE_SLOTS samples are
+ * hashed fillers; counterexamples overwrite them round-robin so that several
+ * are remembered at once (replacing only one slot lets a rejected program
+ * come straight back the next round).
+ */
+const CE_SLOTS = 12;
+function withCounterexample(samples: SampleSet, spec: CompiledSpec, ce: number[], slot: number): { samples: SampleSet; targets: Uint32Array } {
   const inputs = samples.inputs.map((a) => Uint32Array.from(a));
-  for (let i = 0; i < samples.nInputs; i++) inputs[i][NS - 1] = (ce[i] ?? 0) >>> 0;
+  const idx = NS - 1 - (slot % CE_SLOTS);
+  for (let i = 0; i < samples.nInputs; i++) inputs[i][idx] = (ce[i] ?? 0) >>> 0;
   const next: SampleSet = { nInputs: samples.nInputs, inputs };
   return { samples: next, targets: computeTargets(next, spec.fn) };
 }
@@ -99,15 +107,18 @@ export async function runEngine(config: EngineConfig, gpu: Gpu | null, events: E
   };
   const t0 = performance.now();
   const graceMs = config.graceMs ?? 1500;
+  let ceCount = 0;
+  let evaluatedBefore = 0n;
 
   let minLen = 1;
-  for (let round = 0; round < 4; round++) {
+  for (let round = 0; round < 16; round++) {
     const session = new SearchSession();
     const seen = new Set<string>();
     const seenExpr = new Set<string>();
     const accepted: Solution[] = [];
     let firstHitAt = 0;
     let foundL = 0;
+    let evaluatedByLength = 0n;
     let lengthStartedAt = performance.now();
 
     const iter = runSearch({ cfg, samples, targets, minLen, maxLen, gpu, signal, stopAtFirstLength: true }, session);
@@ -119,11 +130,13 @@ export async function runEngine(config: EngineConfig, gpu: Gpu | null, events: E
           events.onLength?.({ L: ev.L, prefixTotal: ev.prefixTotal, rawSpace: ev.rawSpace, backend: ev.backend });
           break;
         case 'progress':
-          result.evaluated = ev.progress.evaluated;
+          result.evaluated = evaluatedBefore + ev.progress.evaluated;
           events.onProgress?.(ev.progress);
           if (foundL && performance.now() - firstHitAt > Math.min(graceMs, 0.5 * (performance.now() - lengthStartedAt) + 300)) session.stop = true;
           break;
         case 'length-done':
+          evaluatedByLength += ev.evaluated;
+          if (evaluatedBefore + evaluatedByLength > result.evaluated) result.evaluated = evaluatedBefore + evaluatedByLength;
           events.onLengthDone?.(ev);
           break;
         case 'compiled':
@@ -142,7 +155,7 @@ export async function runEngine(config: EngineConfig, gpu: Gpu | null, events: E
           const ce = quickCheck(cfg, ev.program, spec, evalProg);
           if (ce) {
             result.screenedOut++;
-            const next = withCounterexample(samples, spec, ce);
+            const next = withCounterexample(samples, spec, ce, ceCount++);
             samples = next.samples; targets = next.targets;
             session.pendingSamples = next;
             break;
@@ -160,6 +173,7 @@ export async function runEngine(config: EngineConfig, gpu: Gpu | null, events: E
           seenExpr.add(expr);
           const sol: Solution = { program: ev.program, L: ev.L, expr };
           accepted.push(sol);
+          session.accepted++;
           if (!foundL) { foundL = ev.L; firstHitAt = performance.now(); }
           events.onCandidate?.(sol);
           break;
@@ -170,6 +184,7 @@ export async function runEngine(config: EngineConfig, gpu: Gpu | null, events: E
     result.searchMs = performance.now() - t0;
     if (result.aborted || result.error) break;
     if (accepted.length === 0) { result.exhausted = true; break; }
+    events.onStatus?.(`${accepted.length} candidate${accepted.length > 1 ? 's' : ''} passed the CPU screen; verifying on the GPU`);
 
     // ---- full verification -------------------------------------------------
     const tv = performance.now();
@@ -178,14 +193,31 @@ export async function runEngine(config: EngineConfig, gpu: Gpu | null, events: E
     const toVerify = accepted.sort((a, b) => readability(a.expr) - readability(b.expr)).slice(0, 4);
     for (const sol of toVerify) {
       if (signal?.aborted) { result.aborted = true; break; }
-      if (!gpu) { anyGood = true; continue; }
       events.onStatus?.('verifying');
       try {
-        const rep = await verifyProgram({
-          gpu, cfg, program: sol.program, spec, signal,
-          randomLog2: config.verifyRandomLog2,
-          onProgress: (d, t, p) => events.onVerifyProgress?.(sol, d, t, p),
-        });
+        let rep: VerifyReport | null = null;
+        if (gpu) {
+          // the first program that passes gets the full treatment; alternatives get the light pass
+          rep = await verifyProgram({
+            gpu, cfg, program: sol.program, spec, signal,
+            randomLog2: config.verifyRandomLog2,
+            level: anyGood ? 'light' : 'full',
+            onProgress: (d, t, p) => events.onVerifyProgress?.(sol, d, t, p),
+          });
+          if (rep.unreliable) {
+            const u = rep.unreliable;
+            events.onError?.(`GPU spot check failed: the ${u.what} gave ${u.gpu} on the GPU but ${u.cpu} on the CPU at ${u.input.join(',')} — the shader compiler miscompiled it; verifying on the CPU instead`);
+            rep = null;
+          }
+        }
+        if (!rep) {
+          if (!anyGood || !gpu) {
+            rep = await verifyOnCpu({ cfg, program: sol.program, spec, signal, onProgress: (d, t, p) => events.onVerifyProgress?.(sol, d, t, p) });
+          } else {
+            // an alternative on a broken GPU: not worth 30 s of CPU time
+            continue;
+          }
+        }
         sol.verify = rep;
         if (rep.mismatches > 0) { sol.rejected = rep.counterexamples[0]; newCe = newCe ?? rep.counterexamples[0]; }
         else if (rep.complete) anyGood = true;
@@ -198,7 +230,7 @@ export async function runEngine(config: EngineConfig, gpu: Gpu | null, events: E
     }
     result.verifyMs += performance.now() - tv;
     const good = toVerify.filter((s) => !s.rejected);
-    if (anyGood || !gpu) {
+    if (anyGood) {
       result.solutions = (good.length ? good : toVerify).sort((a, b) => readability(a.expr) - readability(b.expr));
       result.L = foundL;
       break;
@@ -206,11 +238,12 @@ export async function runEngine(config: EngineConfig, gpu: Gpu | null, events: E
     if (result.error || result.aborted) break;
     // every candidate was wrong: learn the counterexample and search this length again
     if (newCe) {
-      const next = withCounterexample(samples, spec, newCe);
+      evaluatedBefore = result.evaluated;
+      const next = withCounterexample(samples, spec, newCe, ceCount++);
       samples = next.samples; targets = next.targets;
       result.screenedOut += toVerify.length;
       minLen = foundL;
-      events.onStatus?.('counterexample found; searching again');
+      events.onStatus?.(`rejected ${toVerify.map((x) => x.expr).join(' | ')} — counterexample learned, searching again`);
       continue;
     }
     break;
@@ -223,7 +256,8 @@ export const DEFAULT_GROUPS: OpGroup[] = ['base', 'mul', 'bits', 'cmp'];
 /** Lower is nicer: fewer hex literals, fewer casts, fewer temporaries, shorter. */
 function readability(expr: string): number {
   const hex = (expr.match(/0x[0-9a-f]+/g) ?? []).length;
+  const negs = (expr.match(/-\d/g) ?? []).length;
   const casts = (expr.match(/\(u?int32_t\)/g) ?? []).length;
   const temps = (expr.match(/t\d+ =/g) ?? []).length;
-  return hex * 100 + temps * 30 + casts * 10 + expr.length;
+  return hex * 100 + negs * 40 + temps * 30 + casts * 10 + expr.length;
 }

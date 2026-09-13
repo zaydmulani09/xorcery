@@ -59,6 +59,8 @@ export class SearchSession {
   pendingSamples: { samples: SampleSet; targets: Uint32Array } | null = null;
   /** set to stop the search entirely */
   stop = false;
+  /** incremented by the caller for every candidate it accepts; the search stops at the end of a length that produced one */
+  accepted = 0;
 }
 
 // one compiled pipeline per (device, op list)
@@ -139,7 +141,7 @@ export async function* runSearch(opts: SearchOptions, session: SearchSession): A
     for (let L = Math.max(1, minLen); L <= maxLen; L++) {
       if (aborted()) return;
       const raw = space.rawCount(L);
-      let foundAtThisLength = false;
+      const acceptedBefore = session.accepted;
       let evaluatedThisLength = 0n;
       const tL = performance.now();
 
@@ -152,7 +154,6 @@ export async function* runSearch(opts: SearchOptions, session: SearchSession): A
           n++;
           if (session.pendingSamples) { samples = session.pendingSamples.samples; targets = session.pendingSamples.targets; session.pendingSamples = null; }
           if (matchesSamples(cfg, prog, samples, targets)) {
-            foundAtThisLength = true;
             yield { type: 'candidate', program: prog, L };
             if (aborted()) return;
           }
@@ -174,7 +175,7 @@ export async function* runSearch(opts: SearchOptions, session: SearchSession): A
         evaluatedThisLength = BigInt(n);
         evaluated += evaluatedThisLength;
         yield { type: 'length-done', L, evaluated: evaluatedThisLength, elapsedMs: performance.now() - tL };
-        if (foundAtThisLength && (opts.stopAtFirstLength ?? true)) return;
+        if (session.accepted > acceptedBefore && (opts.stopAtFirstLength ?? true)) return;
         continue;
       }
 
@@ -301,7 +302,6 @@ export async function* runSearch(opts: SearchOptions, session: SearchSession): A
               yield { type: 'error', message: `GPU/CPU disagreement on candidate ${key} — please report this` };
               continue;
             }
-            foundAtThisLength = true;
             yield { type: 'candidate', program: prog, L };
             if (aborted()) return;
           }
@@ -317,7 +317,7 @@ export async function* runSearch(opts: SearchOptions, session: SearchSession): A
         }
       }
       yield { type: 'length-done', L, evaluated: evaluatedThisLength, elapsedMs: performance.now() - tL };
-      if (foundAtThisLength && (opts.stopAtFirstLength ?? true)) return;
+      if (session.accepted > acceptedBefore && (opts.stopAtFirstLength ?? true)) return;
     }
   } finally {
     cleanup();

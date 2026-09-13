@@ -171,7 +171,7 @@ export interface CompiledSpec {
 export function emitJs(ast: SpecAst, fnName = 'spec'): string {
   const em = new Emitter('js');
   const body: string[] = [];
-  for (const s of ast.stmts) { const e = em.expr(s.e); em.locals.add(s.name); body.push(`  let v_${s.name} = ${e};`); }
+  for (const s of ast.stmts) { const e = em.expr(s.e); const first = !em.locals.has(s.name); em.locals.add(s.name); body.push(`  ${first ? 'let ' : ''}v_${s.name} = ${e};`); }
   const result = em.expr(ast.result);
   return [...em.helperSource(), `function ${fnName}(x, y, z) {`, '  x >>>= 0; y >>>= 0; z >>>= 0;', ...body, `  return ${result};`, '}'].join('\n');
 }
@@ -179,7 +179,7 @@ export function emitJs(ast: SpecAst, fnName = 'spec'): string {
 export function emitWgsl(ast: SpecAst, fnName = 'spec'): string {
   const em = new Emitter('wgsl');
   const body: string[] = [];
-  for (const s of ast.stmts) { const e = em.expr(s.e); em.locals.add(s.name); body.push(`  let v_${s.name} = ${e};`); }
+  for (const s of ast.stmts) { const e = em.expr(s.e); const first = !em.locals.has(s.name); em.locals.add(s.name); body.push(`  ${first ? 'var ' : ''}v_${s.name}${first ? ': u32' : ''} = ${e};`); }
   const result = em.expr(ast.result);
   return [...em.helperSource(), `fn ${fnName}(x: u32, y: u32, z: u32) -> u32 {`, ...body, `  return ${result};`, '}'].join('\n');
 }

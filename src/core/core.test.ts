@@ -192,7 +192,7 @@ describe('printer / emitters', () => {
     const shl = cfg.ops.findIndex((o) => o.id === 'shl');
     // ((x + y) + z) & (x << y)
     const prog: Program = [{ op: add, a: 1, b: 0 }, { op: add, a: 3, b: 2 }, { op: shl, a: 0, b: 1 }, { op: and, a: 5, b: 4 }];
-    expect(exprString(cfg, prog)).toBe('(x << y) & (z + y + x)');
+    expect(exprString(cfg, prog)).toBe('(x << y) & (z + x + y)');
   });
   it('WGSL and C output mention the helpers they use', () => {
     const cfg = cfgOf(1, [1], ['rot', 'bits']);

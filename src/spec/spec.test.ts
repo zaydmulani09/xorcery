@@ -89,3 +89,16 @@ describe('spec language', () => {
     expect(m.wgsl.indexOf('fn mulhi32')).toBeLessThan(m.wgsl.indexOf('fn mulhs32'));
   });
 });
+
+describe('spec statements', () => {
+  it('allows reassignment of a temporary', () => {
+    const c = compileSpec('t = x - 1; t = t | (t >> 1); t = t | (t >> 2); t + 1');
+    expect(c.fn(5, 0, 0)).toBe(8);
+    expect(c.wgsl).toContain('var v_t: u32 =');
+    expect((c.wgsl.match(/var v_t/g) ?? []).length).toBe(1);
+  });
+  it('a temporary may shadow an input name', () => {
+    const c = compileSpec('x = x + 1; x * 2');
+    expect(c.fn(3, 0, 0)).toBe(8);
+  });
+});
