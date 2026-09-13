@@ -1,0 +1,36 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>og</title>
+<style>body{margin:0;background:#222}canvas{display:block}</style></head>
+<body>
+<canvas id="c" width="1200" height="630"></canvas>
+<script>
+const c = document.getElementById('c'); const g = c.getContext('2d');
+const W = 1200, H = 630;
+g.fillStyle = '#0a0c10'; g.fillRect(0, 0, W, H);
+g.strokeStyle = 'rgba(255,255,255,0.04)'; g.lineWidth = 1;
+for (let x = 0; x < W; x += 32) { g.beginPath(); g.moveTo(x + .5, 0); g.lineTo(x + .5, H); g.stroke(); }
+for (let y = 0; y < H; y += 32) { g.beginPath(); g.moveTo(0, y + .5); g.lineTo(W, y + .5); g.stroke(); }
+const mono = '"JetBrains Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, monospace';
+// title
+g.fillStyle = '#7cf2a3'; g.font = `700 64px ${mono}`; g.fillText('xor', 80, 130);
+const w = g.measureText('xor').width; g.fillStyle = '#d7dce6'; g.fillText('cery', 80 + w, 130);
+g.fillStyle = '#8b94a7'; g.font = `400 30px ${mono}`; g.fillText('your GPU rediscovers bit hacks', 80, 180);
+// spec box
+function box(x, y, w, h, stroke) { g.fillStyle = '#10131a'; g.strokeStyle = stroke; g.lineWidth = 2; g.beginPath(); g.roundRect(x, y, w, h, 10); g.fill(); g.stroke(); }
+box(80, 230, 1040, 74, '#2d3546');
+g.fillStyle = '#5b6478'; g.font = `400 18px ${mono}`; g.fillText('SPEC', 100, 258);
+g.fillStyle = '#d7dce6'; g.font = `400 30px ${mono}`; g.fillText('(int)x < 0 ? -x : x', 100, 292);
+// result
+box(80, 330, 1040, 96, '#7cf2a3');
+g.fillStyle = '#7cf2a3'; g.font = `700 40px ${mono}`; g.fillText('3', 100, 392);
+g.fillStyle = '#8b94a7'; g.font = `400 20px ${mono}`; g.fillText('instructions', 130, 392);
+g.fillStyle = '#d7dce6'; g.font = `400 32px ${mono}`;
+const t = 't0 = (int)x >> 31;  (x ^ t0) - t0';
+g.fillText(t, 300, 392);
+// proof line
+g.fillStyle = '#7cf2a3'; g.font = `400 24px ${mono}`;
+g.fillText('✓ proved on all 4,294,967,296 inputs · 1.7 B programs/s on a laptop GPU', 80, 480);
+g.fillStyle = '#5b6478'; g.font = `400 22px ${mono}`;
+g.fillText('a WebGPU superoptimizer · xorcery.vercel.app · by Zayd Mulani', 80, 560);
+document.fonts.ready.then(() => c.toBlob((b) => fetch('/__save?name=og.png', { method: 'POST', body: b }).then(r => r.text()).then(t => { document.title = t; })));
+</script></body></html>
