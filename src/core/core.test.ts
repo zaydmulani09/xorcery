@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as U from './u32';
 import { OPS, opsForGroups } from './isa';
-import { Space, SpaceConfig, enumeratePrograms, evalProgram, isDeadCodeFree, Program } from './space';
+import { Space, SpaceConfig, deadCodeFreeCount, enumeratePrograms, evalProgram, isDeadCodeFree, Program } from './space';
 import { compileToJs, emitFunction, exprString, printProgram } from './program';
 
 describe('u32 semantics', () => {
@@ -201,5 +201,28 @@ describe('printer / emitters', () => {
     expect(emitFunction(cfg, prog, 'wgsl')).toContain('fn rotl32');
     expect(emitFunction(cfg, prog, 'c')).toContain('static inline uint32_t rotl32');
     expect(emitFunction(cfg, prog, 'rust')).toContain('x.rotate_left(1 & 31)');
+  });
+});
+
+describe('dead-code-free counting', () => {
+  it('matches enumeration for several configurations', () => {
+    const configs: [SpaceConfig, number, number[]][] = [
+      [{ nInputs: 1, consts: [0, 1, 31], ops: opsForGroups(['base']) }, 3, [42, 2268, 170856]],
+      [{ nInputs: 1, consts: [0, 1], ops: opsForGroups(['base']) }, 4, [30, 1260, 78840, 7199280]],
+      [{ nInputs: 1, consts: [0, 1, 3, 31, 0xffffffff], ops: opsForGroups(['base']) }, 3, [66, 5148, 515592]],
+      [{ nInputs: 2, consts: [1], ops: opsForGroups(['base', 'cmp']) }, 4, [63, 3591, 333207, 45339399]],
+    ];
+    for (const [cfg, maxL, expected] of configs) {
+      const space = new Space(cfg, maxL);
+      for (let L = 1; L <= maxL; L++) expect(Number(deadCodeFreeCount(space, L))).toBe(expected[L - 1]);
+    }
+    // and against a fresh enumeration for a config not listed above
+    const cfg: SpaceConfig = { nInputs: 2, consts: [0], ops: opsForGroups(['base', 'bits']) };
+    const space = new Space(cfg, 3);
+    for (let L = 1; L <= 3; L++) {
+      let n = 0;
+      for (const _ of enumeratePrograms(space, L)) n++;
+      expect(Number(deadCodeFreeCount(space, L))).toBe(n);
+    }
   });
 });

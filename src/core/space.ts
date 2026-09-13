@@ -28,7 +28,7 @@
  * program with an unused instruction is just a shorter program in disguise,
  * and that shorter program was already tried at the previous length.
  */
-import { Op, OpKind } from './isa';
+import { Op } from './isa';
 
 export interface SpaceConfig {
   nInputs: number;
@@ -232,4 +232,60 @@ export function programToString(cfg: SpaceConfig, prog: Program): string {
       return `r${i} = ${op.id} ${name(ins.a)}${op.kind === 'unary' ? '' : ' ' + name(ins.b)}`;
     })
     .join('; ');
+}
+
+/**
+ * Exact number of dead-code-free programs of length L, by dynamic programming
+ * over the set of results that are still unread. Each slot's candidates are
+ * grouped by which results they consume, so the cost is (#states x #pairs)
+ * per slot: microseconds, even for L = 8.
+ */
+export function deadCodeFreeCount(space: Space, L: number): bigint {
+  if (L <= 0) return 0n;
+  const cfg = space.cfg;
+  const r0 = firstResult(cfg);
+  // state: bitmask of unread results r0..r(i-1); value: number of prefixes in that state
+  let states = new Map<number, bigint>([[0, 1n]]);
+  for (let slot = 0; slot < L; slot++) {
+    const lay = space.layouts[slot];
+    // consumption mask -> number of candidates in this slot consuming exactly those results
+    const consume = new Map<number, bigint>();
+    cfg.ops.forEach((op, oi) => {
+      const table = lay.tables[pairKind(op)];
+      for (const packed of table) {
+        const a = packed >>> 8, b = packed & 0xff;
+        let m = 0;
+        if (a >= r0) m |= 1 << (a - r0);
+        if (op.kind !== 'unary' && b >= r0) m |= 1 << (b - r0);
+        consume.set(m, (consume.get(m) ?? 0n) + 1n);
+      }
+      void oi;
+    });
+    const next = new Map<number, bigint>();
+    const last = slot === L - 1;
+    for (const [unread, count] of states) {
+      for (const [m, c] of consume) {
+        let u = unread & ~m;
+        if (last) {
+          if (u !== 0) continue; // every earlier result must be read by now
+        } else {
+          u |= 1 << slot; // this slot's result starts out unread
+          // prune: results that can never be read again (fewer operand slots left than unread results)
+          const remainingOperands = 2 * (L - 1 - slot);
+          if (popcount(u) > remainingOperands) continue;
+        }
+        next.set(u, (next.get(u) ?? 0n) + count * c);
+      }
+    }
+    states = next;
+  }
+  let total = 0n;
+  for (const c of states.values()) total += c;
+  return total;
+}
+
+function popcount(x: number): number {
+  let c = 0;
+  while (x) { c += x & 1; x >>>= 1; }
+  return c;
 }

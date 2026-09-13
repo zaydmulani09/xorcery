@@ -8,7 +8,7 @@
  * are never shown, only used to sharpen the screen.
  */
 import { OpGroup, opsForIds } from './core/isa';
-import { Program, SpaceConfig, Space, evalProgram, isDeadCodeFree } from './core/space';
+import { Program, SpaceConfig, Space, deadCodeFreeCount, evalProgram, isDeadCodeFree } from './core/space';
 import { SampleSet, computeTargets, makeSamples } from './core/samples';
 import { compileToJs, exprString } from './core/program';
 import { compileSpec, CompiledSpec } from './spec/compile';
@@ -50,6 +50,8 @@ export interface EngineResult {
   aborted: boolean;
   /** raw program count per length (for display) */
   rawCounts: bigint[];
+  /** exact dead-code-free program count per length (what the search actually evaluates) */
+  counts: bigint[];
   screenedOut: number;
   error?: string;
 }
@@ -87,12 +89,13 @@ export async function runEngine(config: EngineConfig, gpu: Gpu | null, events: E
   const maxLen = Math.max(1, Math.min(8, config.maxLen | 0));
   const space = new Space(cfg, maxLen);
   const rawCounts: bigint[] = [];
-  for (let L = 1; L <= maxLen; L++) rawCounts.push(space.rawCount(L));
+  const counts: bigint[] = [];
+  for (let L = 1; L <= maxLen; L++) { rawCounts.push(space.rawCount(L)); counts.push(deadCodeFreeCount(space, L)); }
 
   let samples = makeSamples(spec.nInputs);
   let targets = computeTargets(samples, spec.fn);
   const result: EngineResult = {
-    spec, cfg, solutions: [], L: 0, evaluated: 0n, searchMs: 0, verifyMs: 0, exhausted: false, aborted: false, rawCounts, screenedOut: 0,
+    spec, cfg, solutions: [], L: 0, evaluated: 0n, searchMs: 0, verifyMs: 0, exhausted: false, aborted: false, rawCounts, counts, screenedOut: 0,
   };
   const t0 = performance.now();
   const graceMs = config.graceMs ?? 1500;
@@ -101,6 +104,7 @@ export async function runEngine(config: EngineConfig, gpu: Gpu | null, events: E
   for (let round = 0; round < 4; round++) {
     const session = new SearchSession();
     const seen = new Set<string>();
+    const seenExpr = new Set<string>();
     const accepted: Solution[] = [];
     let firstHitAt = 0;
     let foundL = 0;
@@ -151,7 +155,10 @@ export async function runEngine(config: EngineConfig, gpu: Gpu | null, events: E
             if (js(...t) !== evalProg(t)) { printerOk = false; break; }
           }
           if (!printerOk) { events.onError?.('printer/interpreter disagreement on ' + key); break; }
-          const sol: Solution = { program: ev.program, L: ev.L, expr: exprString(cfg, ev.program) };
+          const expr = exprString(cfg, ev.program);
+          if (seenExpr.has(expr)) break; // same DAG, different instruction order
+          seenExpr.add(expr);
+          const sol: Solution = { program: ev.program, L: ev.L, expr };
           accepted.push(sol);
           if (!foundL) { foundL = ev.L; firstHitAt = performance.now(); }
           events.onCandidate?.(sol);
@@ -168,7 +175,7 @@ export async function runEngine(config: EngineConfig, gpu: Gpu | null, events: E
     const tv = performance.now();
     let anyGood = false;
     let newCe: number[] | null = null;
-    const toVerify = accepted.slice(0, 6);
+    const toVerify = accepted.sort((a, b) => readability(a.expr) - readability(b.expr)).slice(0, 4);
     for (const sol of toVerify) {
       if (signal?.aborted) { result.aborted = true; break; }
       if (!gpu) { anyGood = true; continue; }
@@ -192,7 +199,7 @@ export async function runEngine(config: EngineConfig, gpu: Gpu | null, events: E
     result.verifyMs += performance.now() - tv;
     const good = toVerify.filter((s) => !s.rejected);
     if (anyGood || !gpu) {
-      result.solutions = good.length ? good : toVerify;
+      result.solutions = (good.length ? good : toVerify).sort((a, b) => readability(a.expr) - readability(b.expr));
       result.L = foundL;
       break;
     }
@@ -212,3 +219,11 @@ export async function runEngine(config: EngineConfig, gpu: Gpu | null, events: E
 }
 
 export const DEFAULT_GROUPS: OpGroup[] = ['base', 'mul', 'bits', 'cmp'];
+
+/** Lower is nicer: fewer hex literals, fewer casts, fewer temporaries, shorter. */
+function readability(expr: string): number {
+  const hex = (expr.match(/0x[0-9a-f]+/g) ?? []).length;
+  const casts = (expr.match(/\(u?int32_t\)/g) ?? []).length;
+  const temps = (expr.match(/t\d+ =/g) ?? []).length;
+  return hex * 100 + temps * 30 + casts * 10 + expr.length;
+}
